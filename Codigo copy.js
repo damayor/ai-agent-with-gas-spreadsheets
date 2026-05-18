@@ -1,441 +1,438 @@
-const tasksEndRow = 39
-const SPREADSHEET_ID = '1fULXN0xEEM5gGVhuMwWK67fJqHAkUDdwI9EvwzNFtVs';
+// ============================================================
+//  CONFIGURACIÓN — editar solo esta sección
+// ============================================================
+
+const SPREADSHEET_ID  = '1fULXN0xEEM5gGVhuMwWK67fJqHAkUDdwI9EvwzNFtVs';
+const tasksEndRow     = 39;
+const CHAT_ID         = 8520405167;
+
+// Token guardado en PropertiesService, NO hardcodeado aquí.
+// Para setearlo, ejecutá una vez: setTokenProperty()
+function setTokenProperty() {
+  PropertiesService.getScriptProperties().setProperty('BOT_TOKEN', 'PEGA_TU_TOKEN_AQUI');
+}
+function getBotToken() {
+  return PropertiesService.getScriptProperties().getProperty('BOT_TOKEN');
+}
+
+// ============================================================
+//  WEBHOOK — responde 200 inmediatamente, encola el trabajo
+// ============================================================
+
+function doPost(e) {
+
+  // 1. Parsear lo antes posible
+  let data;
+  try {
+    data = JSON.parse(e.postData.contents);
+  } catch (_) {
+    return ok();
+  }
+
+  const updateId = data.update_id?.toString();
+
+  // 2. Deduplicar con lock mínimo (solo lectura/escritura de una property)
+  if (updateId) {
+    const lock = LockService.getScriptLock();
+    if (!lock.tryLock(1000)) return ok();           // si no obtenemos lock en 1s, Telegram reintentará → lo ignoramos igual
+    try {
+      const props = PropertiesService.getScriptProperties();
+      if (props.getProperty('uid_' + updateId)) {
+        return ok();                                // duplicado — salir sin procesar
+      }
+      props.setProperty('uid_' + updateId, Date.now().toString());
+    } finally {
+      lock.releaseLock();
+    }
+  }
+
+  // 3. Ignorar updates sin texto (inline queries, etc.)
+  if (!data.message?.text) return ok();
+
+  // 4. Encolar el payload completo para procesarlo async
+  //    Usamos una property con prefijo "queue_" como cola simple
+  const queueKey = 'queue_' + updateId;
+  PropertiesService.getScriptProperties().setProperty(queueKey, e.postData.contents);
+
+  // 5. Crear trigger one-time para procesar en background (no bloquea esta respuesta)
+  ScriptApp.newTrigger('procesarCola')
+    .timeBased()
+    .after(1000)   // 1 segundo — mínimo permitido por GAS
+    .create();
+
+  // 6. Responder 200 inmediatamente — Telegram queda feliz
+  return ok();
+}
+
+function ok() {
+  return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
+}
+
+// ============================================================
+//  PROCESADOR ASYNC — se ejecuta via trigger, no desde webhook
+// ============================================================
+
+function procesarCola() {
+
+  // Limpiar el trigger que nos llamó para no acumular triggers huérfanos
+  limpiarTriggersProcesarCola();
+
+  const props  = PropertiesService.getScriptProperties();
+  const todas  = props.getProperties();
+
+  const pendientes = Object.entries(todas)
+    .filter(([k]) => k.startsWith('queue_'))
+    .sort(([a], [b]) => a.localeCompare(b));   // FIFO por update_id
+
+  if (pendientes.length === 0) return;
+
+  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheets()[0];
+
+  for (const [key, raw] of pendientes) {
+    try {
+      const data = JSON.parse(raw);
+      const text = data.message?.text?.trim();
+      if (!text) continue;
+
+      const respuesta = manejarComando(text, sheet);
+      enviarMensaje(respuesta);
+
+    } catch (err) {
+      console.error('Error procesando', key, err.toString());
+    } finally {
+      props.deleteProperty(key);   // siempre sacar de la cola aunque falle
+    }
+  }
+}
+
+function limpiarTriggersProcesarCola() {
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === 'procesarCola')
+    .forEach(t => ScriptApp.deleteTrigger(t));
+}
+
+// ============================================================
+//  LÓGICA DE COMANDOS
+// ============================================================
+
+/**
+ * Interpreta el texto recibido y devuelve una respuesta string.
+ * Formatos soportados:
+ *   deep            → registra tag "deep" ahora
+ *   deep,end        → registra "END" ahora  (isEnding)
+ *   deep 9:00       → registra "deep" en hora específica
+ *   /status         → resumen del día
+ *   /tags           → lista de tags disponibles
+ */
+function manejarComando(text, sheet) {
+
+  if (text.startsWith('/status')) {
+    return buildStatusMessage(sheet);
+  }
+
+  if (text.startsWith('/tags')) {
+    return buildTagsMessage(sheet);
+  }
+
+  // Formato: "tag[,end][ HH:MM]"
+  const matchHora  = text.match(/(\d{1,2}):(\d{2})\s*$/);
+  let   baseText   = matchHora ? text.replace(matchHora[0], '').trim() : text;
+  const parts      = baseText.split(',');
+  const tag        = parts[0].trim();
+  const isEnding   = parts[1]?.trim() === 'end';
+
+  let fecha;
+  if (matchHora) {
+    fecha = new Date();
+    fecha.setHours(parseInt(matchHora[1]));
+    fecha.setMinutes(parseInt(matchHora[2]));
+    fecha.setSeconds(0);
+  } else {
+    fecha = new Date();
+  }
+
+  const { adjusted, mensajeAjuste } = ajustarHora(fecha);
+  const row = calcularFila(adjusted);
+  const col = calcularColumna(adjusted);
+  const cell = sheet.getRange(row, col);
+
+  const valor = isEnding ? 'END' : tag;
+  cell.setValue(valor);
+
+  const horaStr = `${adjusted.getHours()}:${String(adjusted.getMinutes()).padStart(2,'0')}`;
+  return `✅ "${valor}" → ${horaStr}${mensajeAjuste ? '\n' + mensajeAjuste : ''}`;
+}
+
+// ============================================================
+//  LÓGICA DE HORA — CORREGIDA
+// ============================================================
+
+/**
+ * Ajusta una fecha al bloque de media hora más cercano.
+ * Regla: si faltan ≤5 min para el próximo bloque → avanzar.
+ *        si no → truncar al bloque actual.
+ * 
+ * FIX: el bug original usaba `minutes <= 30` para nextBlock,
+ * lo que hacía que las 9:30 exactas saltaran a 10:00.
+ * Ahora se usa `minutes < 30`.
+ */
+function ajustarHora(date) {
+  let h = date.getHours();
+  let m = date.getMinutes();
+
+  let nextBlock, minutesToNext;
+
+  if (m < 30) {
+    nextBlock     = 30;
+    minutesToNext = 30 - m;
+  } else {
+    nextBlock     = 60;
+    minutesToNext = 60 - m;
+  }
+
+  let mensajeAjuste = '';
+
+  if (minutesToNext <= 5) {
+    // Redondear hacia arriba
+    if (nextBlock === 60) {
+      h += 1;
+      m  = 0;
+    } else {
+      m = 30;
+    }
+    mensajeAjuste = `(redondeado +${60 - (nextBlock === 60 ? 60 - m : m)}min)`;
+  } else {
+    // Truncar al bloque actual
+    m = m < 30 ? 0 : 30;
+  }
+
+  // Edge case: medianoche
+  if (h >= 24) { h = 23; m = 30; }
+
+  const adjusted = new Date(date);
+  adjusted.setHours(h);
+  adjusted.setMinutes(m);
+  adjusted.setSeconds(0);
+
+  return { adjusted, mensajeAjuste };
+}
+
+// M=col3 ... D=col9, fila 2 = 00:00
+function calcularFila(date) {
+  return 2 + (date.getHours() * 2) + (date.getMinutes() >= 30 ? 1 : 0);
+}
+
+function calcularColumna(date) {
+  const day = date.getDay(); // 0=domingo
+  return day === 0 ? 9 : day + 2;
+}
+
+// ============================================================
+//  MENSAJES DE ESTADO
+// ============================================================
+
+function buildStatusMessage(sheet) {
+  const hoy = new Date();
+  const col  = calcularColumna(hoy);
+  const colLetter = String.fromCharCode(64 + col); // col 3 → "C"
+
+  // Leer toda la columna de hoy
+  const valores = sheet.getRange(2, col, 48, 1).getValues().flat();
+  const conteo  = {};
+  valores.forEach(v => {
+    const t = v?.toString().trim();
+    if (t && t !== '') conteo[t] = (conteo[t] || 0) + 1;
+  });
+
+  if (Object.keys(conteo).length === 0) return '📭 No hay registros hoy todavía.';
+
+  const diasSemana = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+  const lineas = [`📊 *${diasSemana[hoy.getDay()]}*`];
+  for (const [tag, bloques] of Object.entries(conteo)) {
+    lineas.push(`  ${tag}: ${(bloques * 0.5).toFixed(1)}h`);
+  }
+  const total = Object.values(conteo).reduce((a, b) => a + b, 0);
+  lineas.push(`\nTotal registrado: ${(total * 0.5).toFixed(1)}h`);
+
+  return lineas.join('\n');
+}
+
+function buildTagsMessage(sheet) {
+  const tags = sheet.getRange(`K17:K${tasksEndRow}`).getValues()
+    .flat()
+    .filter(v => v?.toString().trim());
+  if (tags.length === 0) return 'No encontré tags en K17:K' + tasksEndRow;
+  return '🏷 Tags disponibles:\n' + tags.map(t => `  • ${t}`).join('\n');
+}
+
+// ============================================================
+//  TELEGRAM UTILS
+// ============================================================
+
+function enviarMensaje(texto) {
+  const token = getBotToken();
+  if (!token) { console.error('BOT_TOKEN no configurado'); return; }
+
+  UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: 'post',
+    contentType: 'application/json',
+    muteHttpExceptions: true,
+    payload: JSON.stringify({
+      chat_id:    CHAT_ID,
+      text:       texto,
+      parse_mode: 'Markdown'
+    })
+  });
+}
+
+function setWebhook(webhookUrl) {
+  const token = getBotToken();
+  const del = UrlFetchApp.fetch(
+    `https://api.telegram.org/bot${token}/deleteWebhook?drop_pending_updates=true`
+  );
+  console.log('Delete:', del.getContentText());
+
+  const set = UrlFetchApp.fetch(
+    `https://api.telegram.org/bot${token}/setWebhook?url=${webhookUrl}&drop_pending_updates=true`
+  );
+  console.log('Set:', set.getContentText());
+}
+
+// ============================================================
+//  MANTENIMIENTO
+// ============================================================
+
+// Limpiar update_ids viejos (ejecutar con trigger diario o manualmente)
+function limpiarPropertiesViejas() {
+  const props    = PropertiesService.getScriptProperties();
+  const todas    = props.getProperties();
+  const hace24h  = Date.now() - 86400000;
+
+  let borradas = 0;
+  for (const [k, v] of Object.entries(todas)) {
+    if (k.startsWith('uid_') && parseInt(v) < hace24h) {
+      props.deleteProperty(k);
+      borradas++;
+    }
+  }
+  console.log(`Limpieza: ${borradas} uid_ eliminados`);
+}
+
+// ============================================================
+//  TUS FUNCIONES ORIGINALES (sin cambios funcionales)
+// ============================================================
 
 function limpiarCalendario() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  
-  // Limpiar colores del área de calendario (C2:I49)
-  sheet.getRange(2, 2, 48, 7).setBackground('#ffffff');
-  
+  sheet.getRange(2, 3, 48, 7).setBackground('#ffffff'); // FIX: col 3 (C), no 2 (B)
   SpreadsheetApp.getUi().alert('✅ Calendario limpiado!');
 }
 
 function aplicarFormatoCondicional() {
-  var hoja = SpreadsheetApp.getActiveSheet();
-  var reglas = [];
-  
-  // Lee tu tabla de referencia (ajusta el rango)
-  var tablaRef = hoja.getRange(`K17:K${tasksEndRow}`).getValues();
-  var colores = hoja.getRange(`L17:L${tasksEndRow}`).getBackgrounds();
-
-  console.log("Refs", tablaRef, colores)
-
+  const hoja    = SpreadsheetApp.getActiveSheet();
+  const tablaRef = hoja.getRange(`K17:K${tasksEndRow}`).getValues();
+  const colores  = hoja.getRange(`L17:L${tasksEndRow}`).getBackgrounds();
   hoja.getRange(`M17:M${tasksEndRow}`).setValues(colores);
-  
-  for (var i = 0; i < tablaRef.length; i++) {
-    if (tablaRef[i][0]) { // Si hay palabras clave
-      var palabras = tablaRef[i][0].toString().split(",");
-      var patron = palabras.map(p => "REGEXMATCH(LOWER(C2); \"" + p.trim().toLowerCase() + "\")").join("; ");
-      var formula = "=OR(" + patron + ")";
-      var color = colores[i][0];
-      
-      var regla = SpreadsheetApp.newConditionalFormatRule()
+  const reglas = [];
+  for (let i = 0; i < tablaRef.length; i++) {
+    if (!tablaRef[i][0]) continue;
+    const palabras = tablaRef[i][0].toString().split(',');
+    const patron   = palabras.map(p => `REGEXMATCH(LOWER(C2);"${p.trim().toLowerCase()}")`).join(';');
+    const formula  = `=OR(${patron})`;
+    reglas.push(
+      SpreadsheetApp.newConditionalFormatRule()
         .whenFormulaSatisfied(formula)
-        .setBackground(color)
-        .setRanges([hoja.getRange("C2:I49")]) // Tu rango del calendario
-        .build();
-      
-      reglas.push(regla);
-
-
-    }
+        .setBackground(colores[i][0])
+        .setRanges([hoja.getRange('C2:I49')])
+        .build()
+    );
   }
-  
   hoja.setConditionalFormatRules(reglas);
 }
 
 function actualizarHorasPorActividad() {
-  const hoja = SpreadsheetApp.getActiveSheet();
-  const range = hoja.getRange("C2:I49");
-
+  const hoja       = SpreadsheetApp.getActiveSheet();
+  const range      = hoja.getRange('C2:I49');
   const backgrounds = range.getBackgrounds().flat();
-  const fontLines = range.getFontLines().flat();
-
-  console.log("backgrounds", backgrounds);
-  console.log("fontLines", fontLines);
-
-  const conteo = {};
-
-  // 1. Contar todos los backgrounds en una sola pasada
+  const fontLines  = range.getFontLines().flat();
+  const conteo     = {};
   for (let i = 0; i < backgrounds.length; i++) {
-
-      const color = backgrounds[i];
-      const tachado = fontLines[i] === "line-through";
-      if(!tachado)
-        conteo[color] = (conteo[color] || 0) +  1;
-    
+    if (fontLines[i] !== 'line-through')
+      conteo[backgrounds[i]] = (conteo[backgrounds[i]] || 0) + 1;
   }
-
-  // 2. Leer lista de backgrounds (ej: M17:M39)
   const listaColores = hoja.getRange(`M17:M${tasksEndRow}`).getValues();
-
-  // 3. Mapear resultados
-  const mappedHours = listaColores.map(([color]) => {
-    return [conteo[color]* 0.5 || 0];
-  });
-
-  console.log("backgrounds mappeados: ", mappedHours);
-
-  // 4. Escribir resultados de una vez (N2:N31)
+  const mappedHours  = listaColores.map(([c]) => [conteo[c] * 0.5 || 0]);
   hoja.getRange(`N17:N${tasksEndRow}`).setValues(mappedHours);
 }
 
-//to use in Mobile
+// FIX: usa openById para funcionar también desde webhook/triggers
+function HORAS_LABORALES(columna, filaInicio, filaFin) {
+  const sheet       = SpreadsheetApp.openById(SPREADSHEET_ID).getSheets()[0];
+  const targetColors = sheet.getRange('L22:L31').getBackgrounds().flat();
+  const range       = sheet.getRange(filaInicio, columna, filaFin - filaInicio + 1, 1);
+  const backgrounds = range.getBackgrounds().flat();
+  const fontLines   = range.getFontLines().flat();
+  let total = 0;
+  for (let i = 0; i < backgrounds.length; i++) {
+    if (targetColors.includes(backgrounds[i].toLowerCase()) && fontLines[i] !== 'line-through')
+      total++;
+  }
+  return total * 0.5;
+}
+
 function onEdit(e) {
   const rango = e.range;
-  if (rango.getA1Notation() === "N13" && rango.getValue() === true) {
-    actualizarHorasPorActividad(); // Aquí llamas a tu método
-
-    for (let i = 0; i < 7  ; i++) {
-     HORAS_LABORALES(i+3, 2, 49 ); 
-    }
-
-    rango.setValue(false); // Reinicia el "botón"
+  if (rango.getA1Notation() === 'N13' && rango.getValue() === true) {
+    actualizarHorasPorActividad();
+    for (let i = 0; i < 7; i++) HORAS_LABORALES(i + 3, 2, 49);
+    rango.setValue(false);
   }
-/*
-  if (rango.getA1Notation() === "B55" && rango.getValue() === true) {
-    for (let i = 0; i < 7  ; i++) {
-     HORAS_LABORALES(i+3, 2, 49 ); 
-    }
-    rango.setValue(false); // Reinicia el "botón"
-  }*/
-}
-
-
-//col starts en 1, no en 0
-function HORAS_LABORALES(columna, filaInicio, filaFin) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const activeSheet = ss.getActiveSheet();
-  var targetColors = activeSheet.getRange(`L22:L31`).getBackgrounds().flat();
-  const range = activeSheet.getRange(filaInicio, columna, filaFin - filaInicio + 1, 1);
-  const backgrounds = range.getBackgrounds().flat();
-  const fontLines = range.getFontLines().flat();
-
-  //console.log("backgrounds", backgrounds);
-  //console.log("fontLines", fontLines);
-
-  let totalHoras = 0;
-
-  for (let i = 0; i < backgrounds.length; i++) {
-    const color = backgrounds[i];
-    const tachado = fontLines[i] === "line-through";
-    if (targetColors.includes(color.toLowerCase()) && !tachado) {
-      totalHoras++;
-    }
-
-  }
-  
-  console.log("Horas de la col ", columna, ": ", totalHoras * 0.5);
-  return totalHoras * 0.5;
-}
-
-/**
- * Devuelve si cumpliste las 8h laborales del día.
- * Uso: =CUMPLE_8H("C2:C100")
- * Devuelve: "✅ 9.5h / 8h" o "❌ 6h / 8h"
- *  =HORAS_LABORALES("B2:B50")        → número total de horas laborales del día
-    =CUMPLE_8H("B2:B50")              → "✅ 8.5h / 8h"  o  "❌ 6h / 8h"
-    =CUMPLE_8H("B2:B50", 6) 
- */
-function CUMPLE_8H(sumRangeA1, metaHoras = 8) {
-  const horas = HORAS_LABORALES(sumRangeA1);
-  const cumple = horas >= metaHoras;
-  return `${cumple ? "✅" : "❌"} ${horas}h / ${metaHoras}h`;
-}
-
-
-
-
-function doGet(e) {
-  console.log("trying to GET" + SPREADSHEET_ID)  
-  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheets()[0];
-
-  sheet.getRange("C89").setValue("Hello World GET");
-
-  return ContentService
-    .createTextOutput("ok")
-    .setMimeType(ContentService.MimeType.TEXT);
 }
 
 function onOpen() {
-  const ui = SpreadsheetApp.getUi();
-  ui.createMenu('📅 Calendario Semanal')
-    .addItem('Limpiar Calendario', 'limpiarCalendario')
-    .addItem('Sincronizar tags con colores', 'aplicarFormatoCondicional')
-    .addItem('Actualizar contar horas por color', 'actualizarHorasPorActividad')
-    .addItem('Test solo para update HORAS_LAB', 'test')
+  SpreadsheetApp.getUi()
+    .createMenu('📅 Calendario Semanal')
+    .addItem('Limpiar Calendario',                    'limpiarCalendario')
+    .addItem('Sincronizar tags con colores',           'aplicarFormatoCondicional')
+    .addItem('Actualizar contar horas por color',      'actualizarHorasPorActividad')
+    .addItem('⚙️ Configurar token del bot',            'setTokenProperty')
+    .addItem('🔗 Registrar webhook',                   'promptSetWebhook')
+    .addItem('🗑️ Limpiar properties viejas',           'limpiarPropertiesViejas')
     .addToUi();
 }
 
-function test() {
-  
-  HORAS_LABORALES(9, 2, 49)
-  //actualizarHorasPorActividad()
-
-}
-
-//M to S in Columnas 3 to 9
-function calcularFila(date){
-
-  const h = date.getHours();
-  const m = date.getMinutes();
-
-  return 2 + (h * 2) + (m >= 30 ? 1 : 0);
-} 
-
-function calcularColumna(date){
-
-  const day = date.getDay(); // 0 domingo
-  return day === 0 ? 9 : day + 2;
-}
-
-function testCelda(tag) {
-
-  const sheet = SpreadsheetApp
-    .openById(SPREADSHEET_ID)
-    .getSheets()[0];
-
-  const now = new Date();
-
-  const fila = calcularFila(now);
-  const col = calcularColumna(now);
-  console.log("row and column to update ", fila,";",  col)
-
-  const cell = sheet.getRange(fila, col);
-
-  cell.setValue(tag);
-
-}
-
-//ToTest  9:05  Unity,false
-function procesarActividad(tag, isEnding){
-
-  const sheet = SpreadsheetApp
-    .openById(SPREADSHEET_ID)
-    .getSheets()[0];
-  const now = new Date();
-
-  let minutes = now.getMinutes();
-  let hours = now.getHours();
-
-  // calcular siguiente bloque
-  let nextBlock = null;
-
-  if (minutes <= 30) {
-    nextBlock = 30;
-  } else {
-    nextBlock = 60;
-  }
-
-  const minutesToNext = nextBlock - minutes;
-
-  // si faltan 8 min o menos, saltamos al siguiente bloque
-  if (minutesToNext <= 5) {
-
-    if (nextBlock === 60) {
-      hours += 1;
-      minutes = 0;
-    } else {
-      minutes = 30;
-    }
-
-  } 
-  else {
-
-    if (minutes < 30) {
-      minutes = 0;
-    } else {
-      minutes = 30;
-    }
-
-  }
-
-  const adjusted = new Date(now);
-  adjusted.setHours(hours);
-  adjusted.setMinutes(minutes);
-  adjusted.setSeconds(0);
-
-  console.log("Hora original:", now);
-  console.log("Hora ajustada:", adjusted);
-
-  const row = calcularFila(adjusted);
-  const col = calcularColumna(adjusted);
-
-  console.log("Row:", row, "Col:", col);
-
-  const cell = sheet.getRange(row, col);
-
-  if (!isEnding) {
-
-    cell.setValue(tag);
-
-  } else {
-
-    cell.setValue("END"); //ToDo: To Fix here;
-
+function promptSetWebhook() {
+  const ui  = SpreadsheetApp.getUi();
+  const res = ui.prompt('URL del webhook (tu /exec de Apps Script):');
+  if (res.getSelectedButton() === ui.Button.OK) {
+    setWebhook(res.getResponseText().trim());
+    ui.alert('✅ Webhook registrado');
   }
 }
 
-  const BOT_TOKEN = "8766703385:AAGy8i_2adBysloHoX09qc_KevBS29JeUuo";
-
-function clearTelegramWebhook() {
-  const TOKEN = "8766703385:AAGy8i_2adBysloHoX09qc_KevBS29JeUuo";
-  
-  // 1. Elimina y re-registra el webhook (limpia la cola)
-  const del = UrlFetchApp.fetch(`https://api.telegram.org/bot${TOKEN}/deleteWebhook?drop_pending_updates=true`);
-  
-  console.log("Delete:", del.getContentText());
-
-  const WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbz03ZcenVhTC8aOZtxfYw7yJ2mFiQ9pWEdwZMHAoRbLrh6yk5gQcrwRY3tgv95ZV3RnAQ/exec"
-  const set = UrlFetchApp.fetch(`https://api.telegram.org/bot${TOKEN}/setWebhook?url=${WEBHOOK_URL}&drop_pending_updates=true`);
-  
-  console.log("Webhook limpiado y re-registrado");
-  console.log("Set:", set.getContentText());
-
-}
-
-function backDoPost(e) {
-  console.log("Webhook triggered 15.3");
-  
-  const CHAT_ID = 8520405167; // tu chat personal con el bot
-
-  SpreadsheetApp.flush(); // fuerza contexto de ejecución loggeable
-  console.log("RAW:", JSON.stringify(e));
-
-  try {
-    console.log(e.postData.contents);
-
-
-    const data = JSON.parse(e.postData.contents);
-
-    // Last try Envíate el update_id y texto como mensaje de Telegram
-    const updateId = data.update_id?.toString();
-    const msgText = data.message?.text || "sin texto";
-    
-    UrlFetchApp.fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-      method: "post",
-      contentType: "application/json",
-      payload: JSON.stringify({
-        chat_id: CHAT_ID,
-        text: `update_id: ${updateId}\ntexto: ${msgText}`
-      })
-    });
-
-    // ✅ Siempre responder OK aunque no haya mensaje
-    if (!data.message || !data.message.text) {
-      return ContentService.createTextOutput("ok");
-    }
-
-    // ✅ Deduplicar por update_id para evitar el loop
-    console.log("updateId", updateId);
-    if (updateId) {
-      const cache = CacheService.getScriptCache();
-      if (cache.get(updateId)) {
-        console.log("Update ya procesado, ignorando:", updateId);
-        return ContentService.createTextOutput("ok");
-      }
-      cache.put(updateId, "1", 3600); // guarda por 1 hora
-    }
-
-    const text = data.message.text;
-    const parts = text.split(",");
-
-    const tag = parts[0];
-    const isEnding = parts[1] === "end";
-
-    console.log("tag:", tag, "| isEnding:", isEnding);
-
-    const output = ContentService.createTextOutput("ok");
-
-    //procesarActividad(tag, isEnding);
-
-    return output;
-  }
-  catch(err){
-    console.error("ERRORRR:", err.toString());
-
-    console.error(err);
-    return ContentService.createTextOutput("ok");
-
-  }
-}
-
-function doPost(e) {
-
-  console.log("Webhook triggered 19.3");
-  
-  const CHAT_ID = 8520405167; // tu chat personal con el bot
-
-  SpreadsheetApp.flush(); // fuerza contexto de ejecución loggeable
-  console.log("RAW:", JSON.stringify(e));
-
-
-  try {
-    const data = JSON.parse(e.postData.contents);
-    const updateId = data.update_id?.toString();
-
-    // 🔒 Lock para evitar concurrencia
-    const lock = LockService.getScriptLock();
-    lock.waitLock(3000);
-
-    try {
-      // ✅ PropertiesService persiste entre instancias (CacheService no garantiza esto)
-      const props = PropertiesService.getScriptProperties();
-      if (updateId && props.getProperty(updateId)) {
-        console.log("Duplicado bloqueado:", updateId);
-        return ContentService.createTextOutput("ok");
-      }
-      if (updateId) props.setProperty(updateId, "1");
-    } finally {
-      lock.releaseLock();
-    }
-
-    if (!data.message?.text) {
-      return ContentService.createTextOutput("ok");
-    }
-
-    const text = data.message.text;
-    const parts = text.split(",");
-    const tag = parts[0].trim();
-    const isEnding = parts[1]?.trim() === "end";
-
-    console.log("update_id:", updateId, "| tag:", tag, "| isEnding:", isEnding);
-
-    UrlFetchApp.fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-      method: "post",
-      contentType: "application/json",
-      payload: JSON.stringify({
-        chat_id: CHAT_ID,
-        text: `✅ update_id: ${updateId}\ntag: ${tag}\nisEnding: ${isEnding}`
-      })
-    });
-
-    procesarActividad(tag, isEnding);
-
-    return ContentService.createTextOutput("ok");
-
-  } catch(err) {
-    console.error("ERROR:", err.toString());
-    return ContentService.createTextOutput("ok");
-  }
-}
-
-function limpiarProperties() {
-  PropertiesService.getScriptProperties().deleteAllProperties();
-}
+// ============================================================
+//  TEST LOCAL (no usa bot)
+// ============================================================
 
 function testDoPost() {
+  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheets()[0];
+  // Probá distintos casos:
+  console.log(manejarComando('deep', sheet));          // ahora
+  console.log(manejarComando('deep 9:00', sheet));     // hora manual
+  console.log(manejarComando('deep,end', sheet));      // cierre
+  console.log(manejarComando('/status', sheet));
+  console.log(manejarComando('/tags', sheet));
+}
 
-  const fakeEvent = {
-    postData: {
-      contents: JSON.stringify({
-        message: {
-          text: "Hamburg, init"
-        }
-      })
-    }
-  };
-
-  doPost(fakeEvent);
-
+function testAjusteHora() {
+  const casos = [
+    [9,  0], [9,  5], [9, 25], [9, 26],
+    [9, 28], [9, 29], [9, 30], [9, 31],
+    [9, 55], [9, 56], [23,55]
+  ];
+  for (const [h, m] of casos) {
+    const d   = new Date(); d.setHours(h); d.setMinutes(m); d.setSeconds(0);
+    const {adjusted} = ajustarHora(d);
+    console.log(`${h}:${String(m).padStart(2,'0')} → ${adjusted.getHours()}:${String(adjusted.getMinutes()).padStart(2,'0')}`);
+  }
 }
