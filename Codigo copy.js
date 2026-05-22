@@ -1,438 +1,455 @@
-// ============================================================
-//  CONFIGURACIÓN — editar solo esta sección
-// ============================================================
-
-const SPREADSHEET_ID  = '1fULXN0xEEM5gGVhuMwWK67fJqHAkUDdwI9EvwzNFtVs';
-const tasksEndRow     = 39;
-const CHAT_ID         = 8520405167;
-
-// Token guardado en PropertiesService, NO hardcodeado aquí.
-// Para setearlo, ejecutá una vez: setTokenProperty()
-function setTokenProperty() {
-  PropertiesService.getScriptProperties().setProperty('BOT_TOKEN', 'PEGA_TU_TOKEN_AQUI');
-}
-function getBotToken() {
-  return PropertiesService.getScriptProperties().getProperty('BOT_TOKEN');
-}
-
-// ============================================================
-//  WEBHOOK — responde 200 inmediatamente, encola el trabajo
-// ============================================================
-
-function doPost(e) {
-
-  // 1. Parsear lo antes posible
-  let data;
-  try {
-    data = JSON.parse(e.postData.contents);
-  } catch (_) {
-    return ok();
-  }
-
-  const updateId = data.update_id?.toString();
-
-  // 2. Deduplicar con lock mínimo (solo lectura/escritura de una property)
-  if (updateId) {
-    const lock = LockService.getScriptLock();
-    if (!lock.tryLock(1000)) return ok();           // si no obtenemos lock en 1s, Telegram reintentará → lo ignoramos igual
-    try {
-      const props = PropertiesService.getScriptProperties();
-      if (props.getProperty('uid_' + updateId)) {
-        return ok();                                // duplicado — salir sin procesar
-      }
-      props.setProperty('uid_' + updateId, Date.now().toString());
-    } finally {
-      lock.releaseLock();
-    }
-  }
-
-  // 3. Ignorar updates sin texto (inline queries, etc.)
-  if (!data.message?.text) return ok();
-
-  // 4. Encolar el payload completo para procesarlo async
-  //    Usamos una property con prefijo "queue_" como cola simple
-  const queueKey = 'queue_' + updateId;
-  PropertiesService.getScriptProperties().setProperty(queueKey, e.postData.contents);
-
-  // 5. Crear trigger one-time para procesar en background (no bloquea esta respuesta)
-  ScriptApp.newTrigger('procesarCola')
-    .timeBased()
-    .after(1000)   // 1 segundo — mínimo permitido por GAS
-    .create();
-
-  // 6. Responder 200 inmediatamente — Telegram queda feliz
-  return ok();
-}
-
-function ok() {
-  return ContentService.createTextOutput('ok').setMimeType(ContentService.MimeType.TEXT);
-}
-
-// ============================================================
-//  PROCESADOR ASYNC — se ejecuta via trigger, no desde webhook
-// ============================================================
-
-function procesarCola() {
-
-  // Limpiar el trigger que nos llamó para no acumular triggers huérfanos
-  limpiarTriggersProcesarCola();
-
-  const props  = PropertiesService.getScriptProperties();
-  const todas  = props.getProperties();
-
-  const pendientes = Object.entries(todas)
-    .filter(([k]) => k.startsWith('queue_'))
-    .sort(([a], [b]) => a.localeCompare(b));   // FIFO por update_id
-
-  if (pendientes.length === 0) return;
-
-  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheets()[0];
-
-  for (const [key, raw] of pendientes) {
-    try {
-      const data = JSON.parse(raw);
-      const text = data.message?.text?.trim();
-      if (!text) continue;
-
-      const respuesta = manejarComando(text, sheet);
-      enviarMensaje(respuesta);
-
-    } catch (err) {
-      console.error('Error procesando', key, err.toString());
-    } finally {
-      props.deleteProperty(key);   // siempre sacar de la cola aunque falle
-    }
-  }
-}
-
-function limpiarTriggersProcesarCola() {
-  ScriptApp.getProjectTriggers()
-    .filter(t => t.getHandlerFunction() === 'procesarCola')
-    .forEach(t => ScriptApp.deleteTrigger(t));
-}
-
-// ============================================================
-//  LÓGICA DE COMANDOS
-// ============================================================
-
-/**
- * Interpreta el texto recibido y devuelve una respuesta string.
- * Formatos soportados:
- *   deep            → registra tag "deep" ahora
- *   deep,end        → registra "END" ahora  (isEnding)
- *   deep 9:00       → registra "deep" en hora específica
- *   /status         → resumen del día
- *   /tags           → lista de tags disponibles
- */
-function manejarComando(text, sheet) {
-
-  if (text.startsWith('/status')) {
-    return buildStatusMessage(sheet);
-  }
-
-  if (text.startsWith('/tags')) {
-    return buildTagsMessage(sheet);
-  }
-
-  // Formato: "tag[,end][ HH:MM]"
-  const matchHora  = text.match(/(\d{1,2}):(\d{2})\s*$/);
-  let   baseText   = matchHora ? text.replace(matchHora[0], '').trim() : text;
-  const parts      = baseText.split(',');
-  const tag        = parts[0].trim();
-  const isEnding   = parts[1]?.trim() === 'end';
-
-  let fecha;
-  if (matchHora) {
-    fecha = new Date();
-    fecha.setHours(parseInt(matchHora[1]));
-    fecha.setMinutes(parseInt(matchHora[2]));
-    fecha.setSeconds(0);
-  } else {
-    fecha = new Date();
-  }
-
-  const { adjusted, mensajeAjuste } = ajustarHora(fecha);
-  const row = calcularFila(adjusted);
-  const col = calcularColumna(adjusted);
-  const cell = sheet.getRange(row, col);
-
-  const valor = isEnding ? 'END' : tag;
-  cell.setValue(valor);
-
-  const horaStr = `${adjusted.getHours()}:${String(adjusted.getMinutes()).padStart(2,'0')}`;
-  return `✅ "${valor}" → ${horaStr}${mensajeAjuste ? '\n' + mensajeAjuste : ''}`;
-}
-
-// ============================================================
-//  LÓGICA DE HORA — CORREGIDA
-// ============================================================
-
-/**
- * Ajusta una fecha al bloque de media hora más cercano.
- * Regla: si faltan ≤5 min para el próximo bloque → avanzar.
- *        si no → truncar al bloque actual.
- * 
- * FIX: el bug original usaba `minutes <= 30` para nextBlock,
- * lo que hacía que las 9:30 exactas saltaran a 10:00.
- * Ahora se usa `minutes < 30`.
- */
-function ajustarHora(date) {
-  let h = date.getHours();
-  let m = date.getMinutes();
-
-  let nextBlock, minutesToNext;
-
-  if (m < 30) {
-    nextBlock     = 30;
-    minutesToNext = 30 - m;
-  } else {
-    nextBlock     = 60;
-    minutesToNext = 60 - m;
-  }
-
-  let mensajeAjuste = '';
-
-  if (minutesToNext <= 5) {
-    // Redondear hacia arriba
-    if (nextBlock === 60) {
-      h += 1;
-      m  = 0;
-    } else {
-      m = 30;
-    }
-    mensajeAjuste = `(redondeado +${60 - (nextBlock === 60 ? 60 - m : m)}min)`;
-  } else {
-    // Truncar al bloque actual
-    m = m < 30 ? 0 : 30;
-  }
-
-  // Edge case: medianoche
-  if (h >= 24) { h = 23; m = 30; }
-
-  const adjusted = new Date(date);
-  adjusted.setHours(h);
-  adjusted.setMinutes(m);
-  adjusted.setSeconds(0);
-
-  return { adjusted, mensajeAjuste };
-}
-
-// M=col3 ... D=col9, fila 2 = 00:00
-function calcularFila(date) {
-  return 2 + (date.getHours() * 2) + (date.getMinutes() >= 30 ? 1 : 0);
-}
-
-function calcularColumna(date) {
-  const day = date.getDay(); // 0=domingo
-  return day === 0 ? 9 : day + 2;
-}
-
-// ============================================================
-//  MENSAJES DE ESTADO
-// ============================================================
-
-function buildStatusMessage(sheet) {
-  const hoy = new Date();
-  const col  = calcularColumna(hoy);
-  const colLetter = String.fromCharCode(64 + col); // col 3 → "C"
-
-  // Leer toda la columna de hoy
-  const valores = sheet.getRange(2, col, 48, 1).getValues().flat();
-  const conteo  = {};
-  valores.forEach(v => {
-    const t = v?.toString().trim();
-    if (t && t !== '') conteo[t] = (conteo[t] || 0) + 1;
-  });
-
-  if (Object.keys(conteo).length === 0) return '📭 No hay registros hoy todavía.';
-
-  const diasSemana = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
-  const lineas = [`📊 *${diasSemana[hoy.getDay()]}*`];
-  for (const [tag, bloques] of Object.entries(conteo)) {
-    lineas.push(`  ${tag}: ${(bloques * 0.5).toFixed(1)}h`);
-  }
-  const total = Object.values(conteo).reduce((a, b) => a + b, 0);
-  lineas.push(`\nTotal registrado: ${(total * 0.5).toFixed(1)}h`);
-
-  return lineas.join('\n');
-}
-
-function buildTagsMessage(sheet) {
-  const tags = sheet.getRange(`K17:K${tasksEndRow}`).getValues()
-    .flat()
-    .filter(v => v?.toString().trim());
-  if (tags.length === 0) return 'No encontré tags en K17:K' + tasksEndRow;
-  return '🏷 Tags disponibles:\n' + tags.map(t => `  • ${t}`).join('\n');
-}
-
-// ============================================================
-//  TELEGRAM UTILS
-// ============================================================
-
-function enviarMensaje(texto) {
-  const token = getBotToken();
-  if (!token) { console.error('BOT_TOKEN no configurado'); return; }
-
-  UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: 'post',
-    contentType: 'application/json',
-    muteHttpExceptions: true,
-    payload: JSON.stringify({
-      chat_id:    CHAT_ID,
-      text:       texto,
-      parse_mode: 'Markdown'
-    })
-  });
-}
-
-function setWebhook(webhookUrl) {
-  const token = getBotToken();
-  const del = UrlFetchApp.fetch(
-    `https://api.telegram.org/bot${token}/deleteWebhook?drop_pending_updates=true`
-  );
-  console.log('Delete:', del.getContentText());
-
-  const set = UrlFetchApp.fetch(
-    `https://api.telegram.org/bot${token}/setWebhook?url=${webhookUrl}&drop_pending_updates=true`
-  );
-  console.log('Set:', set.getContentText());
-}
-
-// ============================================================
-//  MANTENIMIENTO
-// ============================================================
-
-// Limpiar update_ids viejos (ejecutar con trigger diario o manualmente)
-function limpiarPropertiesViejas() {
-  const props    = PropertiesService.getScriptProperties();
-  const todas    = props.getProperties();
-  const hace24h  = Date.now() - 86400000;
-
-  let borradas = 0;
-  for (const [k, v] of Object.entries(todas)) {
-    if (k.startsWith('uid_') && parseInt(v) < hace24h) {
-      props.deleteProperty(k);
-      borradas++;
-    }
-  }
-  console.log(`Limpieza: ${borradas} uid_ eliminados`);
-}
-
-// ============================================================
-//  TUS FUNCIONES ORIGINALES (sin cambios funcionales)
-// ============================================================
+const tasksEndRow = 39
+const SPREADSHEET_ID = '1fULXN0xEEM5gGVhuMwWK67fJqHAkUDdwI9EvwzNFtVs';
 
 function limpiarCalendario() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  sheet.getRange(2, 3, 48, 7).setBackground('#ffffff'); // FIX: col 3 (C), no 2 (B)
+  
+  // Limpiar colores del área de calendario (C2:I49)
+  sheet.getRange(2, 2, 48, 7).setBackground('#ffffff');
+  
   SpreadsheetApp.getUi().alert('✅ Calendario limpiado!');
 }
 
 function aplicarFormatoCondicional() {
-  const hoja    = SpreadsheetApp.getActiveSheet();
-  const tablaRef = hoja.getRange(`K17:K${tasksEndRow}`).getValues();
-  const colores  = hoja.getRange(`L17:L${tasksEndRow}`).getBackgrounds();
+  var hoja = SpreadsheetApp.getActiveSheet();
+  var reglas = [];
+  
+  // Lee tu tabla de referencia (ajusta el rango)
+  var tablaRef = hoja.getRange(`K17:K${tasksEndRow}`).getValues();
+  var colores = hoja.getRange(`L17:L${tasksEndRow}`).getBackgrounds();
+
+  console.log("Refs", tablaRef, colores)
+
   hoja.getRange(`M17:M${tasksEndRow}`).setValues(colores);
-  const reglas = [];
-  for (let i = 0; i < tablaRef.length; i++) {
-    if (!tablaRef[i][0]) continue;
-    const palabras = tablaRef[i][0].toString().split(',');
-    const patron   = palabras.map(p => `REGEXMATCH(LOWER(C2);"${p.trim().toLowerCase()}")`).join(';');
-    const formula  = `=OR(${patron})`;
-    reglas.push(
-      SpreadsheetApp.newConditionalFormatRule()
+  
+  for (var i = 0; i < tablaRef.length; i++) {
+    if (tablaRef[i][0]) { // Si hay palabras clave
+      var palabras = tablaRef[i][0].toString().split(",");
+      var patron = palabras.map(p => "REGEXMATCH(LOWER(C2); \"" + p.trim().toLowerCase() + "\")").join("; ");
+      var formula = "=OR(" + patron + ")";
+      var color = colores[i][0];
+      
+      var regla = SpreadsheetApp.newConditionalFormatRule()
         .whenFormulaSatisfied(formula)
-        .setBackground(colores[i][0])
-        .setRanges([hoja.getRange('C2:I49')])
-        .build()
-    );
+        .setBackground(color)
+        .setRanges([hoja.getRange("C2:I49")]) // Tu rango del calendario
+        .build();
+      
+      reglas.push(regla);
+
+
+    }
   }
+  
   hoja.setConditionalFormatRules(reglas);
 }
 
 function actualizarHorasPorActividad() {
-  const hoja       = SpreadsheetApp.getActiveSheet();
-  const range      = hoja.getRange('C2:I49');
+  const hoja = SpreadsheetApp.getActiveSheet();
+  const range = hoja.getRange("C2:I49");
+
   const backgrounds = range.getBackgrounds().flat();
-  const fontLines  = range.getFontLines().flat();
-  const conteo     = {};
+  const fontLines = range.getFontLines().flat();
+
+  console.log("backgrounds", backgrounds);
+  console.log("fontLines", fontLines);
+
+  const conteo = {};
+
+  // 1. Contar todos los backgrounds en una sola pasada
   for (let i = 0; i < backgrounds.length; i++) {
-    if (fontLines[i] !== 'line-through')
-      conteo[backgrounds[i]] = (conteo[backgrounds[i]] || 0) + 1;
+
+      const color = backgrounds[i];
+      const tachado = fontLines[i] === "line-through";
+      if(!tachado)
+        conteo[color] = (conteo[color] || 0) +  1;
+    
   }
+
+  // 2. Leer lista de backgrounds (ej: M17:M39)
   const listaColores = hoja.getRange(`M17:M${tasksEndRow}`).getValues();
-  const mappedHours  = listaColores.map(([c]) => [conteo[c] * 0.5 || 0]);
+
+  // 3. Mapear resultados
+  const mappedHours = listaColores.map(([color]) => {
+    return [conteo[color]* 0.5 || 0];
+  });
+
+  console.log("backgrounds mappeados: ", mappedHours);
+
+  // 4. Escribir resultados de una vez (N2:N31)
   hoja.getRange(`N17:N${tasksEndRow}`).setValues(mappedHours);
 }
 
-// FIX: usa openById para funcionar también desde webhook/triggers
-function HORAS_LABORALES(columna, filaInicio, filaFin) {
-  const sheet       = SpreadsheetApp.openById(SPREADSHEET_ID).getSheets()[0];
-  const targetColors = sheet.getRange('L22:L31').getBackgrounds().flat();
-  const range       = sheet.getRange(filaInicio, columna, filaFin - filaInicio + 1, 1);
-  const backgrounds = range.getBackgrounds().flat();
-  const fontLines   = range.getFontLines().flat();
-  let total = 0;
-  for (let i = 0; i < backgrounds.length; i++) {
-    if (targetColors.includes(backgrounds[i].toLowerCase()) && fontLines[i] !== 'line-through')
-      total++;
-  }
-  return total * 0.5;
-}
-
+//to use in Mobile
 function onEdit(e) {
   const rango = e.range;
-  if (rango.getA1Notation() === 'N13' && rango.getValue() === true) {
-    actualizarHorasPorActividad();
-    for (let i = 0; i < 7; i++) HORAS_LABORALES(i + 3, 2, 49);
-    rango.setValue(false);
+  if (rango.getA1Notation() === "N13" && rango.getValue() === true) {
+    actualizarHorasPorActividad(); // Aquí llamas a tu método
+
+    for (let i = 0; i < 7  ; i++) {
+     HORAS_LABORALES(i+3, 2, 49 ); 
+    }
+
+    rango.setValue(false); // Reinicia el "botón"
   }
+/*
+  if (rango.getA1Notation() === "B55" && rango.getValue() === true) {
+    for (let i = 0; i < 7  ; i++) {
+     HORAS_LABORALES(i+3, 2, 49 ); 
+    }
+    rango.setValue(false); // Reinicia el "botón"
+  }*/
 }
 
+
+//col starts en 1, no en 0
+function HORAS_LABORALES(columna, filaInicio, filaFin) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const activeSheet = ss.getActiveSheet();
+  var targetColors = activeSheet.getRange(`L22:L31`).getBackgrounds().flat();
+  var arbeitColors = activeSheet.getRange(`L39`).getBackgrounds().flat();
+
+  const range = activeSheet.getRange(filaInicio, columna, filaFin - filaInicio + 1, 1);
+  const backgrounds = range.getBackgrounds().flat();
+  const fontLines = range.getFontLines().flat();
+
+  console.log("backgrounds", arbeitColors);
+
+  let totalHoras = 0;
+
+  for (let i = 0; i < backgrounds.length; i++) {
+    const color = backgrounds[i];
+    const tachado = fontLines[i] === "line-through";
+    if (targetColors.includes(color.toLowerCase()) && !tachado) {
+      totalHoras++;
+    }
+
+  }
+  
+  console.log("Horas de la col ", columna, ": ", totalHoras * 0.5);
+  return totalHoras * 0.5;
+}
+
+function HORAS_LAB_DISPONIBLES(columna, filaInicio, filaFin) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const activeSheet = ss.getActiveSheet();
+  var targetColor = "#990000"
+  const range = activeSheet.getRange(filaInicio, columna, filaFin - filaInicio + 1, 1);
+  const backgrounds = range.getBackgrounds().flat();
+  const fontLines = range.getFontLines().flat();
+
+  let totalHoras = 0;
+
+  for (let i = 0; i < backgrounds.length; i++) {
+    const color = backgrounds[i];
+    
+    if (targetColor ==  color.toLowerCase() ) {
+      totalHoras++;
+    }
+
+  }
+  
+  console.log("Horas de la col ", columna, ": ", totalHoras * 0.5);
+  return totalHoras * 0.5;
+}
+
+/**
+ * Devuelve si cumpliste las 8h laborales del día.
+ * Uso: =CUMPLE_8H("C2:C100")
+ * Devuelve: "✅ 9.5h / 8h" o "❌ 6h / 8h"
+ *  =HORAS_LABORALES("B2:B50")        → número total de horas laborales del día
+    =CUMPLE_8H("B2:B50")              → "✅ 8.5h / 8h"  o  "❌ 6h / 8h"
+    =CUMPLE_8H("B2:B50", 6) 
+ */
+function CUMPLE_8H(sumRangeA1, metaHoras = 8) {
+  const horas = HORAS_LABORALES(sumRangeA1);
+  const cumple = horas >= metaHoras;
+  return `${cumple ? "✅" : "❌"} ${horas}h / ${metaHoras}h`;
+}
+
+
+
+
 function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu('📅 Calendario Semanal')
-    .addItem('Limpiar Calendario',                    'limpiarCalendario')
-    .addItem('Sincronizar tags con colores',           'aplicarFormatoCondicional')
-    .addItem('Actualizar contar horas por color',      'actualizarHorasPorActividad')
-    .addItem('⚙️ Configurar token del bot',            'setTokenProperty')
-    .addItem('🔗 Registrar webhook',                   'promptSetWebhook')
-    .addItem('🗑️ Limpiar properties viejas',           'limpiarPropertiesViejas')
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('📅 Calendario Semanal')
+    .addItem('Limpiar Calendario', 'limpiarCalendario')
+    .addItem('Sincronizar tags con colores', 'aplicarFormatoCondicional')
+    .addItem('Actualizar contar horas por color', 'actualizarHorasPorActividad')
+    .addItem('Test solo para update HORAS_LAB', 'test')
+    .addItem('distribuirProyectos', 'distribuirProyectos')
     .addToUi();
 }
 
-function promptSetWebhook() {
-  const ui  = SpreadsheetApp.getUi();
-  const res = ui.prompt('URL del webhook (tu /exec de Apps Script):');
-  if (res.getSelectedButton() === ui.Button.OK) {
-    setWebhook(res.getResponseText().trim());
-    ui.alert('✅ Webhook registrado');
+function test() {
+  
+  
+    for (let i = 0; i < 7  ; i++) {
+     HORAS_LABORALES(i+3, 2, 49 ); 
+    }
+    rango.setValue(false); // Reinicia el "botón"
+  
+  //actualizarHorasPorActividad()
+
+}
+
+function distribuirProyectos() {
+  var hoja = SpreadsheetApp.getActiveSheet();
+  
+  // GUARDAR ESTADO ANTERIOR PARA DESHACER
+  //guardarEstadoAnterior();
+  
+  // 1. LEER PROYECTOS (filas 22-31)
+  var proyectos = [];
+  var datosProyectos = hoja.getRange("K22:S31").getValues();
+  
+  for (var i = 0; i < datosProyectos.length; i++) {
+    var tags = datosProyectos[i][0]; // Columna K
+    var horasObjetivo = datosProyectos[i][4]; // Columna O
+    var bloques = datosProyectos[i][8]; // Columna S
+    
+    if (tags && horasObjetivo > 0) {
+      var nombreProyecto = tags.toString().split(",")[0].trim();
+      var tamanosBloques = bloques.toString().split(",").map(function(b) {
+        return parseFloat(b.trim());
+      }).filter(function(b) { return !isNaN(b); });
+      
+      proyectos.push({
+        nombre: nombreProyecto,
+        horasObjetivo: parseFloat(horasObjetivo),
+        tamanosBloques: tamanosBloques,
+        horasAsignadas: 0,
+        asignacionesPorDia: [0, 0, 0, 0, 0, 0, 0] // Contador por día
+      });
+    }
   }
-}
-
-// ============================================================
-//  TEST LOCAL (no usa bot)
-// ============================================================
-
-function testDoPost() {
-  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheets()[0];
-  // Probá distintos casos:
-  console.log(manejarComando('deep', sheet));          // ahora
-  console.log(manejarComando('deep 9:00', sheet));     // hora manual
-  console.log(manejarComando('deep,end', sheet));      // cierre
-  console.log(manejarComando('/status', sheet));
-  console.log(manejarComando('/tags', sheet));
-}
-
-function testAjusteHora() {
-  const casos = [
-    [9,  0], [9,  5], [9, 25], [9, 26],
-    [9, 28], [9, 29], [9, 30], [9, 31],
-    [9, 55], [9, 56], [23,55]
-  ];
-  for (const [h, m] of casos) {
-    const d   = new Date(); d.setHours(h); d.setMinutes(m); d.setSeconds(0);
-    const {adjusted} = ajustarHora(d);
-    console.log(`${h}:${String(m).padStart(2,'0')} → ${adjusted.getHours()}:${String(adjusted.getMinutes()).padStart(2,'0')}`);
+  
+  Logger.log("Proyectos detectados: " + proyectos.length);
+  
+  // 2. DETECTAR BLOQUES ROJOS DISPONIBLES (C2:I49)
+  var rangoCalendario = hoja.getRange("C2:I49");
+  var valores = rangoCalendario.getValues();
+  var colores = rangoCalendario.getBackgrounds();
+  
+  var bloquesLibres = [];
+  
+  // Detectar bloques rojos consecutivos
+  for (var col = 0; col < 7; col++) { // 7 días (C a I)
+    var bloqueActual = null;
+    
+    for (var fila = 0; fila < valores.length; fila++) {
+      var color = colores[fila][col].toLowerCase();
+      var esRojo = color.includes("99") || color.includes("cc0000") || 
+                   color.includes("8b0000") || color.includes("a00000") ||
+                   color.includes("800000");
+      
+      if (esRojo) {
+        if (bloqueActual === null) {
+          bloqueActual = {
+            col: col,
+            filaInicio: fila,
+            tamanioOriginal: 0.5,
+            fragmentos: [] // Para trackear cómo se subdivide
+          };
+        } else {
+          bloqueActual.tamanioOriginal += 0.5;
+        }
+      } else {
+        if (bloqueActual !== null) {
+          bloquesLibres.push(bloqueActual);
+          bloqueActual = null;
+        }
+      }
+    }
+    
+    if (bloqueActual !== null) {
+      bloquesLibres.push(bloqueActual);
+    }
   }
+  
+  Logger.log("Bloques libres detectados: " + bloquesLibres.length);
+  
+  // 3. ALGORITMO DE ASIGNACIÓN MEJORADO
+  var asignaciones = [];
+  
+  // Round-robin: asignar 1 bloque por proyecto en cada pasada
+  var proyectosActivos = proyectos.slice();
+  var intentos = 0;
+  var maxIntentos = 1000; // Evitar loops infinitos
+
+  // Ordenar proyectos: primero los que tienen bloques más grandes
+  proyectos.sort(function(a, b) {
+    var maxBloqueA = Math.max.apply(Math, a.tamanosBloques);
+    var maxBloqueB = Math.max.apply(Math, b.tamanosBloques);
+    return maxBloqueB - maxBloqueA; // Mayor a menor
+  });
+
+  // Ordenar bloques libres: primero los más grandes
+  bloquesLibres.sort(function(a, b) {
+    return b.tamanioOriginal - a.tamanioOriginal;
+  });
+    
+  while (proyectosActivos.length > 0 && intentos < maxIntentos) {
+    intentos++;
+    
+    for (var p = proyectosActivos.length - 1; p >= 0; p--) {
+      var proyecto = proyectosActivos[p];
+      
+      if (proyecto.horasAsignadas >= proyecto.horasObjetivo) {
+        proyectosActivos.splice(p, 1);
+        continue;
+      }
+      
+      // Calcular horas restantes
+      var horasRestantes = proyecto.horasObjetivo - proyecto.horasAsignadas;
+      
+      // Seleccionar tamanio de bloque ideal
+      var tamanioDeseado = seleccionarTamanioBloque(proyecto.tamanosBloques, horasRestantes);
+      
+      // Buscar el mejor bloque disponible
+      var mejorBloque = encontrarMejorBloque(bloquesLibres, proyecto, tamanioDeseado);
+      
+      if (mejorBloque) {
+        // Asignar
+        var horasAAsignar = Math.min(tamanioDeseado, mejorBloque.bloque.tamanioOriginal, horasRestantes);
+        
+        asignaciones.push({
+          proyecto: proyecto.nombre,
+          col: mejorBloque.bloque.col,
+          filaInicio: mejorBloque.bloque.filaInicio,
+          tamanio: horasAAsignar
+        });
+        
+        proyecto.horasAsignadas += horasAAsignar;
+        proyecto.asignacionesPorDia[mejorBloque.bloque.col] += horasAAsignar;
+        
+        // Actualizar el bloque libre
+        var numCeldas = Math.round(horasAAsignar * 2);
+        mejorBloque.bloque.filaInicio += numCeldas;
+        mejorBloque.bloque.tamanioOriginal -= horasAAsignar;
+        
+        if (mejorBloque.bloque.tamanioOriginal <= 0) {
+          bloquesLibres.splice(mejorBloque.indice, 1);
+        }
+      } else {
+        // No hay más bloques para este proyecto
+        Logger.log("⚠️ No hay más bloques disponibles para " + proyecto.nombre);
+        proyectosActivos.splice(p, 1);
+      }
+    }
+  }
+  
+  // 4. ESCRIBIR ASIGNACIONES EN EL CALENDARIO
+  for (var a = 0; a < asignaciones.length; a++) {
+    var asig = asignaciones[a];
+    var numCeldas = Math.round(asig.tamanio * 2);
+    
+    for (var c = 0; c < numCeldas; c++) {
+      var fila = asig.filaInicio + c + 2;
+      var columna = asig.col + 3;
+      
+      hoja.getRange(fila, columna).setValue(asig.proyecto);
+    }
+  }
+
+  actualizarHorasPorActividad();
+  
+  // 5. REPORTE
+  var mensaje = "✅ Distribución completada:\n\n";
+  proyectos.forEach(function(p) {
+    mensaje += p.nombre + ": " + p.horasAsignadas + "h de " + p.horasObjetivo + "h";
+    if (p.horasAsignadas >= p.horasObjetivo) {
+      mensaje += " ✓\n";
+    } else {
+      mensaje += " ⚠️\n";
+    }
+  });
+
+
+  
+  SpreadsheetApp.getUi().alert(mensaje);
 }
+
+// Función para seleccionar el mejor tamanio de bloque
+function seleccionarTamanioBloque(tamaniosDisponibles, horasRestantes) {
+  // Ordenar de mayor a menor
+  var ordenados = tamaniosDisponibles.slice().sort(function(a, b) { return b - a; });
+  
+  // Intentar usar el más grande que quepa
+  for (var i = 0; i < ordenados.length; i++) {
+    if (ordenados[i] <= horasRestantes) {
+      return ordenados[i];
+    }
+  }
+  
+  // Si ninguno cabe, usar el más pequenio
+  return ordenados[ordenados.length - 1];
+}
+// Función para encontrar el mejor bloque (prioriza distribución en la semana)
+function encontrarMejorBloque(bloquesLibres, proyecto, tamanioDeseado) {
+  var candidatos = [];
+  
+  for (var i = 0; i < bloquesLibres.length; i++) {
+    var bloque = bloquesLibres[i];
+    
+    if (bloque.tamañoOriginal >= tamanioDeseado || bloque.tamanioOriginal >= 0.5) {
+      // Calcular score: priorizar días con menos asignaciones de este proyecto
+      var horasEnEsteDia = proyecto.asignacionesPorDia[bloque.col];
+      var score = -horasEnEsteDia; // Menor score = mejor (menos saturado)
+      
+      candidatos.push({
+        bloque: bloque,
+        indice: i,
+        score: score
+      });
+    }
+  }
+  
+  if (candidatos.length === 0) {
+    return null;
+  }
+  
+  // Ordenar por score (mejor primero)
+  candidatos.sort(function(a, b) { return b.score - a.score; });
+  
+  // Tomar uno de los top 3 aleatoriamente para más variedad
+  var topCandidatos = candidatos.slice(0, Math.min(3, candidatos.length));
+  return topCandidatos[Math.floor(Math.random() * topCandidatos.length)];
+}
+
+// ============================================
+// FUNCIONES PARA DESHACER
+// ============================================
+
+// Función para limpiar solo los proyectos asignados y dejar las celdas rojas con el tag Arbeit!
+function limpiarProyectos() {
+  var hoja = SpreadsheetApp.getActiveSheet();
+  var rango = hoja.getRange("C2:I49");
+  var valores = rango.getValues();
+  
+  // Leer nombres de proyectos
+  var datosProyectos = hoja.getRange("K22:K31").getValues();
+  var nombresProyectos = [];
+  
+  for (var i = 0; i < datosProyectos.length; i++) {
+    if (datosProyectos[i][0]) {
+      var nombre = datosProyectos[i][0].toString().split(",")[0].trim();
+      nombresProyectos.push(nombre);
+    }
+  }
+  
+  // Limpiar celdas que contengan nombres de proyectos
+  for (var i = 0; i < valores.length; i++) {
+    for (var j = 0; j < valores[i].length; j++) {
+      var valorCelda = valores[i][j].toString().trim();
+      
+      if (nombresProyectos.indexOf(valorCelda) !== -1) {
+        valores[i][j] = "Arbeit";
+      }
+    }
+  }
+  
+  rango.setValues(valores);
+  SpreadsheetApp.getUi().alert("✅ Proyectos limpiados. Celdas rojas intactas.");
+}
+
