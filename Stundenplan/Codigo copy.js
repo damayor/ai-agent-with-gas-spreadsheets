@@ -27,6 +27,8 @@ function aplicarFormatoCondicional() {
       var palabras = tablaRef[i][0].toString().split(",");
       var patron = palabras.map(p => "REGEXMATCH(LOWER(C2); \"" + p.trim().toLowerCase() + "\")").join("; ");
       var formula = "=OR(" + patron + ")";
+      
+      var formula = "=AND(LEN(C2)>0, OR(" + patron + "))";
       var color = colores[i][0];
       
       var regla = SpreadsheetApp.newConditionalFormatRule()
