@@ -6,20 +6,16 @@
 // ============================================================
 const EMAIL_DESTINO = "dr.mayorga20@gmail.com";
 const ID_HOJA       = "1yYJzqZmJOvM6lMMXLdf_ZWMEaa0_vvDWDeu87T2sm38";
-const NOMBRE_TAB    = "Woerte des Tages";
+const NOMBRE_TAB    = "WoerterDesTages";
 const ZONA_HORARIA  = "Europe/Berlin";
 
-// Define los intervalos en días. El orden importa:
-//   1er Activador del día → INTERVALOS[0]
-//   2do Activador del día → INTERVALOS[1]  etc.
-// Máximo 5. Poné los Activadores en GAS a la hora que quieras.
-const INTERVALOS = [30, 14, 7, 3, 1];
+// Intervalos en días (orden = orden de disparo del día):
+//   1er Activador → INTERVALOS[0], 2do → INTERVALOS[1], etc.
+const INTERVALOS = [30, 14, 7, 3, 2];
 
 // ============================================================
 // NO es necesario tocar nada debajo de esta línea
 // ============================================================
-
-// --- Contador diario de disparos ----------------------------
 
 function obtenerIndiceDeHoy() {
   const props    = PropertiesService.getScriptProperties();
@@ -27,14 +23,9 @@ function obtenerIndiceDeHoy() {
   const clave    = `disparos_${hoy}`;
   const disparos = parseInt(props.getProperty(clave) || "0");
   props.setProperty(clave, String(disparos + 1));
-
-  // Limpiar ayer para no acumular basura
-  const ayer = Utilities.formatDate(
-    new Date(Date.now() - 86400000), ZONA_HORARIA, "yyyy-MM-dd"
-  );
+  const ayer = Utilities.formatDate(new Date(Date.now() - 86400000), ZONA_HORARIA, "yyyy-MM-dd");
   props.deleteProperty(`disparos_${ayer}`);
-
-  return disparos; // 0 = primer disparo, 1 = segundo, etc.
+  return disparos;
 }
 
 function resetearContadorHoy() {
@@ -47,11 +38,8 @@ function resetearContadorHoy() {
 function verContadorHoy() {
   const props    = PropertiesService.getScriptProperties();
   const hoy      = Utilities.formatDate(new Date(), ZONA_HORARIA, "yyyy-MM-dd");
-  const disparos = props.getProperty(`disparos_${hoy}`) || "0";
-  Logger.log(`Disparos hoy (${hoy}): ${disparos}`);
+  Logger.log(`Disparos hoy (${hoy}): ${props.getProperty(`disparos_${hoy}`) || "0"}`);
 }
-
-// --- Utilidades ---------------------------------------------
 
 function etiquetaDias(dias) {
   const esUltimo = dias === INTERVALOS[INTERVALOS.length - 1];
@@ -81,46 +69,35 @@ function parsearFecha(celda) {
   return null;
 }
 
-// --- Telegram -----------------------------------------------
+function tieneFrase(celda) {
+  const val = (celda || "").toString().trim();
+  if (!val || val === "-" || val === "–" || val === "...") return false;
+  if (val.endsWith("...")) return false;
+  return true;
+}
 
 function enviarTelegram(mensaje) {
   const props  = PropertiesService.getScriptProperties();
   const token  = props.getProperty("TELEGRAM_TOKEN");
   const chatId = props.getProperty("TELEGRAM_CHAT_ID");
-
-  if (!token || !chatId) {
-    Logger.log("⚠️ Faltan TELEGRAM_TOKEN o TELEGRAM_CHAT_ID en Propiedades del script.");
-    return false;
-  }
-
-  const url  = `https://api.telegram.org/bot${token}/sendMessage`;
-  const body = JSON.stringify({
-    chat_id:    chatId,
-    text:       mensaje,
-    parse_mode: "HTML",
-  });
+  if (!token || !chatId) { Logger.log("⚠️ Faltan TELEGRAM_TOKEN o TELEGRAM_CHAT_ID."); return false; }
 
   try {
-    const resp      = UrlFetchApp.fetch(url, {
+    const resp = UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method:             "post",
       contentType:        "application/json",
-      payload:            body,
+      payload:            JSON.stringify({ chat_id: chatId, text: mensaje, parse_mode: "HTML" }),
       muteHttpExceptions: true,
     });
-    const resultado = JSON.parse(resp.getContentText());
-    if (!resultado.ok) {
-      Logger.log("❌ Telegram error: " + JSON.stringify(resultado));
-      return false;
-    }
-    Logger.log("✅ Mensaje Telegram enviado.");
+    const res = JSON.parse(resp.getContentText());
+    if (!res.ok) { Logger.log("❌ Telegram error: " + JSON.stringify(res)); return false; }
+    Logger.log("✅ Mensaje enviado.");
     return true;
   } catch (e) {
-    Logger.log("❌ Excepción al llamar Telegram: " + e.message);
+    Logger.log("❌ Excepción: " + e.message);
     return false;
   }
 }
-
-// --- Lógica principal ---------------------------------------
 
 function obtenerPalabras(fechaRef, dias) {
   const hoy  = new Date(fechaRef);
@@ -145,18 +122,22 @@ function obtenerPalabras(fechaRef, dias) {
 
     const esIngles = (fila[5] || "").toString().trim().toLowerCase() === "en";
 
+    // C/G/K=2/6/10, D/H/L=3/7/11, E/I/M=4/8/12
     const pares = [
-      { orig: fila[2], trad: fila[6] },
-      { orig: fila[3], trad: fila[7] },
-      { orig: fila[4], trad: fila[8] },
+      { orig: fila[2], trad: fila[6],  frase: fila[10] },
+      { orig: fila[3], trad: fila[7],  frase: fila[11] },
+      { orig: fila[4], trad: fila[8],  frase: fila[12] },
     ];
 
     for (const par of pares) {
-      const orig = (par.orig || "").toString().trim();
-      const trad = (par.trad || "").toString().trim();
+      const orig  = (par.orig  || "").toString().trim();
+      const trad  = (par.trad  || "").toString().trim();
+      const frase = (par.frase || "").toString().trim();
       if (!orig || orig === "-" || orig === "–") continue;
       if (!trad || trad === "-" || trad === "–") continue;
-      (esIngles ? palabrasEN : palabrasDE).push({ orig, trad });
+
+      const spoiler = tieneFrase(frase) ? frase : trad;
+      (esIngles ? palabrasEN : palabrasDE).push({ orig, spoiler });
     }
   }
 
@@ -164,7 +145,6 @@ function obtenerPalabras(fechaRef, dias) {
 }
 
 function construirMensaje(palabrasDE, palabrasEN, dias, posicion, esSimulacion, fechaSimulada) {
-  const total    = palabrasDE.length + palabrasEN.length;
   const correoNum = posicion + 1;
   const totalAct  = INTERVALOS.length;
 
@@ -173,92 +153,71 @@ function construirMensaje(palabrasDE, palabrasEN, dias, posicion, esSimulacion, 
     + `<i>Fecha simulada: ${fechaSimulada.toLocaleDateString("es-DE")}</i>\n\n`
     : `🧠 <b>Repaso ${correoNum}/${totalAct} · ${etiquetaDias(dias)}</b>\n\n`;
 
-  msg += `Intentá recordar antes de tocar 👇\n`;
-  msg += `<i>(traducciones ocultas — tocá para revelar)</i>\n\n`;
+  msg += `Tocá cada palabra para revelarla 👇\n\n`;
 
   if (palabrasDE.length > 0) {
     msg += `🇩🇪 <b>Deutsch</b>\n<code>─────────────────────</code>\n`;
     for (const p of palabrasDE) {
-      msg += `• <b>${p.orig}</b>  →  <tg-spoiler>${p.trad}</tg-spoiler>\n`;
+      // Palabra visible + spoiler en línea separada = reveal independiente por tap
+      msg += `• <b>${p.orig}</b>\n<tg-spoiler>${p.spoiler}</tg-spoiler>\n\n`;
     }
-    msg += `\n`;
   }
 
   if (palabrasEN.length > 0) {
     msg += `🇬🇧 <b>English</b>\n<code>─────────────────────</code>\n`;
     for (const p of palabrasEN) {
-      msg += `• <b>${p.orig}</b>  →  <tg-spoiler>${p.trad}</tg-spoiler>\n`;
+      msg += `• <b>${p.orig}</b>\n<tg-spoiler>${p.spoiler}</tg-spoiler>\n\n`;
     }
-    msg += `\n`;
   }
 
-  msg += `<i>Intervalos activos: ${INTERVALOS.map(d => `+${d}d`).join(" · ")}</i>`;
-  return { msg, total };
+  msg += `<i>Intervalos: ${INTERVALOS.map(d => `+${d}d`).join(" · ")}</i>`;
+  return msg;
 }
-
-// --- Función principal (llamada por los Activadores) --------
 
 function enviarRecordatorioHoy() {
   const posicion = obtenerIndiceDeHoy();
   const dias     = INTERVALOS[posicion];
 
   if (dias === undefined) {
-    Logger.log(`ℹ️ Disparo #${posicion + 1} ignorado — solo hay ${INTERVALOS.length} intervalos definidos.`);
+    Logger.log(`ℹ️ Disparo #${posicion + 1} ignorado — solo hay ${INTERVALOS.length} intervalos.`);
     return;
   }
 
-  Logger.log(`Disparo #${posicion + 1} → intervalo +${dias}d`);
+  Logger.log(`Disparo #${posicion + 1} → +${dias}d`);
 
   const { palabrasDE, palabrasEN } = obtenerPalabras(new Date(), dias);
   const total = palabrasDE.length + palabrasEN.length;
 
-  if (total === 0) {
-    Logger.log(`No hay palabras para +${dias}d hoy.`);
-    return;
-  }
+  if (total === 0) { Logger.log(`No hay palabras para +${dias}d hoy.`); return; }
 
-  const { msg } = construirMensaje(palabrasDE, palabrasEN, dias, posicion, false, null);
-  enviarTelegram(msg);
-  Logger.log(`Notificación enviada: ${total} palabras (+${dias}d)`);
+  enviarTelegram(construirMensaje(palabrasDE, palabrasEN, dias, posicion, false, null));
+  Logger.log(`Enviadas: ${total} palabras (+${dias}d)`);
 }
 
-// --- Funciones de prueba ------------------------------------
-
 function probarTelegram() {
-  // Prueba de conexión pura — no toca el contador
   enviarTelegram("✅ Conexión con Wörter des Tages funcionando correctamente.");
 }
 
 function probarSimulacion() {
-  // ↓↓ EDITÁ ESTOS DOS VALORES PARA PROBAR ↓↓
-  const fechaSimulada = new Date("2026-06-23"); // fecha a simular (YYYY-MM-DD)
-  const posicionSim   = 0;                      // 0=1er disparo, 1=2do, 2=3ro...
-  // ↑↑ ————————————————————————————————————— ↑↑
+  // ↓↓ EDITÁ ESTOS DOS VALORES ↓↓
+  const fechaSimulada = new Date("2026-06-24");
+  const posicionSim   = 0;
+  // ↑↑ ————————————————————————— ↑↑
 
   const dias = INTERVALOS[posicionSim];
-  if (dias === undefined) {
-    Logger.log(`No hay intervalo en posición ${posicionSim}.`);
-    return;
-  }
+  if (dias === undefined) { Logger.log("Posición inválida."); return; }
 
   fechaSimulada.setHours(0, 0, 0, 0);
-  Logger.log(`=== SIMULACIÓN: ${fechaSimulada.toDateString()} · posición ${posicionSim} → +${dias}d ===`);
+  Logger.log(`=== SIMULACIÓN: ${fechaSimulada.toDateString()} · +${dias}d ===`);
 
   const { palabrasDE, palabrasEN } = obtenerPalabras(fechaSimulada, dias);
   const total = palabrasDE.length + palabrasEN.length;
 
-  // Log en consola
-  [...palabrasDE.map(p => `🇩🇪 ${p.orig} → ${p.trad}`),
-   ...palabrasEN.map(p => `🇬🇧 ${p.orig} → ${p.trad}`)
+  [...palabrasDE.map(p => `🇩🇪 ${p.orig} → ${p.spoiler}`),
+   ...palabrasEN.map(p => `🇬🇧 ${p.orig} → ${p.spoiler}`)
   ].forEach(l => Logger.log(`  ${l}`));
-  Logger.log(`Total: ${total} palabras.`);
+  Logger.log(`Total: ${total}`);
 
-  if (total === 0) {
-    Logger.log("No hay palabras para esta simulación.");
-    return;
-  }
-
-  // Enviar por Telegram (no toca el contador de disparos reales)
-  const { msg } = construirMensaje(palabrasDE, palabrasEN, dias, posicionSim, true, fechaSimulada);
-  enviarTelegram(msg);
+  if (total === 0) { Logger.log("Sin palabras para esta simulación."); return; }
+  enviarTelegram(construirMensaje(palabrasDE, palabrasEN, dias, posicionSim, true, fechaSimulada));
 }
