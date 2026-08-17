@@ -5,8 +5,10 @@
 //   /nueva DD/MM/YYYY | p1 | p2 | p3 | idioma
 //   /ver DD/MM/YYYY
 //   /hoy
+//   /dictionary [DD/MM/YYYY]
 //   /intervalos 30 14 7 3 2
 //   /intervalos reset
+//   (texto libre, sin "/")  -> se guarda como palabra suelta en col. R
 // ============================================================
 
 const ID_HOJA_F    = "1yYJzqZmJOvM6lMMXLdf_ZWMEaa0_vvDWDeu87T2sm38";
@@ -44,19 +46,28 @@ function doPost(e) {
     const chatId = msg.chat.id.toString();
     const texto  = msg.text.trim();
 
-    if (texto.startsWith("/nueva"))       manejarNueva(chatId, texto);
-    else if (texto.startsWith("/ver"))    manejarVer(chatId, texto);
-    else if (texto.startsWith("/hoy"))    manejarHoy(chatId);
-    else if (texto.startsWith("/intervalos")) manejarIntervalos(chatId, texto);
-    else {
+    if (texto.startsWith("/nueva"))            manejarNueva(chatId, texto);
+    else if (texto.startsWith("/ver"))         manejarVer(chatId, texto);
+    else if (texto.startsWith("/hoy"))         manejarHoy(chatId);
+    else if (texto.startsWith("/dictionary"))  manejarDictionary(chatId, texto);
+    else if (texto.startsWith("/intervalos"))  manejarIntervalos(chatId, texto);
+    else if (texto.startsWith("/")) {
       responderTelegram(chatId,
         "🤖 Comandos disponibles:\n\n" +
         "/nueva <code>DD/MM/YYYY | p1 | p2 | p3 | idioma</code>\n" +
         "/ver <code>DD/MM/YYYY</code>\n" +
         "/hoy\n" +
+        "/dictionary <code>[DD/MM/YYYY]</code>  — palabras sueltas guardadas ese día\n" +
         "/intervalos <code>30 14 7 3</code>  — cambia intervalos\n" +
-        "/intervalos <code>reset</code>  — vuelve al default"
+        "/intervalos <code>reset</code>  — vuelve al default\n\n" +
+        "También podés escribirme una palabra suelta (sin \"/\") y la guardo directo."
       );
+    }
+    else {
+      // Texto libre -> se guarda rápido en el Inbox, sin tocar
+      // WoerterDesTages (eso lo hace el trigger procesarInbox aparte)
+      guardarEnInbox(chatId, texto);
+      responderTelegram(chatId, `📥 <b>${texto}</b> guardada. Se escribe en la hoja en el próximo minuto.`);
     }
   } catch(err) {
     Logger.log("doPost error: " + err.message);
@@ -279,7 +290,7 @@ function responderTelegram(chatId, texto) {
 
 function registrarWebhook() {
   const token     = PropertiesService.getScriptProperties().getProperty("TELEGRAM_TOKEN");
-  const webAppUrl = "PEGA_AQUI_TU_URL_DE_IMPLEMENTACION";
+  const webAppUrl = "https://script.google.com/macros/s/AKfycbwwMFNs4yJy5K1Rai-SpaJrZ5e_A5shmgzyJDSrGrxFrlSEArPDPtH8F7fdnqDtwIVF/exec";
   const resp = UrlFetchApp.fetch(
     `https://api.telegram.org/bot${token}/setWebhook?url=${encodeURIComponent(webAppUrl)}`,
     { muteHttpExceptions: true }
@@ -293,6 +304,14 @@ function eliminarWebhook() {
     `https://api.telegram.org/bot${token}/deleteWebhook?drop_pending_updates=true`,
     { muteHttpExceptions: true }
   );
+  Logger.log(resp.getContentText());
+}
+
+//Debug y ver si tiene queue
+
+function verWebhookInfo() {
+  const token = PropertiesService.getScriptProperties().getProperty("TELEGRAM_TOKEN");
+  const resp = UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
   Logger.log(resp.getContentText());
 }
 

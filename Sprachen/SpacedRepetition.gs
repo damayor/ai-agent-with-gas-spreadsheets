@@ -12,7 +12,7 @@ const ZONA_HORARIA  = "Europe/Berlin";
 // INTERVALOS — se puede sobreescribir desde Telegram con /intervalos
 // Si hay un valor guardado en PropertiesService, ese tiene prioridad.
 // Para resetear al valor de acá, usá /intervalos reset desde Telegram.
-const INTERVALOS_DEFAULT = [30, 14, 7, 3, 2];
+const INTERVALOS_DEFAULT = [30, 120, 90, 14, 7, 5, 2];
 
 // ============================================================
 // NO es necesario tocar nada debajo de esta línea
@@ -68,9 +68,9 @@ function etiquetaDias(dias, fechaOrigen) {
   const diasSemana = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
   const diaSem     = diasSemana[fechaOrigen.getDay()];
   const diaMes     = fechaOrigen.getDate().toString().padStart(2, "0");
-  const mes        = fechaOrigen.getMonth()+1;
+  const mesCorto   = fechaOrigen.toLocaleString('de-DE', { month: 'short' });
 
-  return `${diaSem} ${diaMes}-${mes} (+${dias}d)${sufijo}`;
+  return `${diaSem} ${diaMes}-${mesCorto} (+${dias}d)${sufijo}`;
 }
 
 function parsearFecha(celda) {
@@ -187,14 +187,13 @@ function enviarRecordatorioHoy() {
   // Mensaje 1 — Header
   enviarTelegram(
     `🧠 <b>Repaso ${correoNum}/${totalAct}</b>\n` +
-    `📅 ${etiqueta}\n` +
-    `<i>Tocá cada palabra para revelarla 👇</i>`
+    `📅 ${etiqueta}\n`
   );
 
   // Mensajes 2, 3, 4 — una palabra por mensaje
   for (const p of todas) {
     enviarTelegram(
-      `<b>${p.orig}</b>\n<tg-spoiler>${p.spoiler}</tg-spoiler>`
+      `${p.bandera} <b>${p.orig}</b>\n<tg-spoiler>${p.spoiler}</tg-spoiler>`
     );
   }
 
@@ -210,7 +209,7 @@ function probarTelegram() {
 function probarSimulacion() {
   // ↓↓ EDITÁ ESTOS DOS VALORES ↓↓
   const fechaSimulada = new Date("2026-06-27");
-  const posicionSim   = 0;
+  const posicionSim   = 4;
   // ↑↑ ————————————————————————— ↑↑
 
   const INTERVALOS = obtenerIntervalos();
@@ -235,9 +234,8 @@ function probarSimulacion() {
 
   // Header con tag [SIMULACIÓN]
   enviarTelegram(
-    `🧪 <b>[SIMULACIÓN] Repaso ${posicionSim+1}/${INTERVALOS.length}</b>\n` +
-    `📅 ${etiqueta}\n` +
-    `<i>Tocá cada palabra para revelarla 👇</i>`
+    `🧪 <b>[SIMULACIÓN] ${posicionSim+1}/${INTERVALOS.length}</b>\n` +
+    `📅 ${etiqueta}\n`
   );
 
   for (const p of todas) {
