@@ -156,20 +156,7 @@ function manejarDictionary(chatId, texto) {
   responderTelegram(chatId, respuesta);
 }
 
-// ------------------------------------------------------------
-// Instalar el trigger de tiempo — CORRER UNA SOLA VEZ A MANO
-// ------------------------------------------------------------
-function crearTriggerInbox() {
-  const yaExiste = ScriptApp.getProjectTriggers()
-    .some(function(t) { return t.getHandlerFunction() === "procesarInbox"; });
-
-  if (yaExiste) {
-    Logger.log("El trigger de procesarInbox ya existe, no se crea otro.");
-    return;
-  }
-  ScriptApp.newTrigger("procesarInbox")
-    .timeBased()
-    .everyMinutes(1)
-    .create();
-  Logger.log("Trigger creado: procesarInbox cada 1 minuto.");
-}
+// NOTA (migración a polling): procesarInbox() ya NO tiene su propio
+// trigger — ahora lo dispara tick() (ver Polling.gs), junto con
+// pollTelegram(), para no acumular triggers de 1 minuto. El trigger
+// vigente se instala con crearTriggerTick(), no con esta función.

@@ -51,7 +51,30 @@ del archivo afectado).
 - El token de Telegram vive en `PropertiesService.getScriptProperties()`
   como `TELEGRAM_TOKEN` (nunca hardcodeado en el código).
 
-## Estado actual (04/08/2026) — EN PROGRESO, bug activo
+## Estado actual (17/08/2026) — migrado a polling
+
+El webhook (`doPost`) quedó como referencia histórica sin trigger de
+entrada. El mecanismo vigente es **polling**:
+
+- **`Polling.gs`** — `pollTelegram()` llama a `getUpdates` con offset
+  guardado en `PropertiesService` (`TG_OFFSET`), y por cada update
+  llama a `procesarUpdateTelegram(update)` (extraída de `doPost`,
+  ahora vive en `Form.gs`, hace el ruteo de comandos). `tick()` es el
+  handler del trigger de 1 minuto: llama a `pollTelegram()` y
+  `procesarInbox()` en la misma corrida (con `LockService`), para no
+  duplicar triggers de 1 min y no gastar cuota de más (cuenta
+  gratuita ~90 min/día). `crearTriggerTick()` instala el trigger — se
+  corre una sola vez a mano.
+- `Inboxdiccionario.gs` ya no instala su propio trigger
+  (`crearTriggerInbox()` fue removida); `procesarInbox()` sigue
+  intacta pero ahora la dispara `tick()`.
+- Pendiente correr `eliminarWebhook()` una vez confirmado que
+  `pollTelegram` funciona en producción (probar con `/nueva`, `/ver`,
+  `/hoy`, `/dictionary`, texto libre, varios seguidos).
+- `verWebhookInfo()` queda sin mucho uso una vez eliminado el webhook
+  (sirve para confirmar `pending_update_count` en 0 antes de borrar).
+
+## Estado anterior (04/08/2026) — bug que motivó la migración
 
 ### ✅ Ya resuelto hoy
 - El sistema Inbox → columna R/S funciona de punta a punta (probado a

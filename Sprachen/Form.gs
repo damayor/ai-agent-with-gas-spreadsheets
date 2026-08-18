@@ -2,7 +2,7 @@
 // WOERTER DES TAGES — Formulario web + Telegram Webhook
 // ============================================================
 // Comandos Telegram:
-//   /nueva DD/MM/YYYY | p1 | p2 | p3 | idioma
+//   /nueva DD/MM, idioma, p1, p2, p3   (1 a 3 palabras, sin año)
 //   /ver DD/MM/YYYY
 //   /hoy
 //   /dictionary [DD/MM/YYYY]
@@ -30,49 +30,63 @@ function doGet(e) {
 // doPost — Webhook Telegram
 // ============================================================
 
+// NOTA (migración a polling): doPost queda sin usar una vez corrido
+// eliminarWebhook() — se deja como referencia histórica / por si algún
+// día se quiere reactivar el webhook. El mecanismo vigente es
+// pollTelegram() (ver Polling.gs), que llama a procesarUpdateTelegram
+// por cada update nuevo.
 function doPost(e) {
   try {
-    const update   = JSON.parse(e.postData.contents);
-    const updateId = String(update.update_id);
-
-    // Deduplicación por update_id
-    const props = PropertiesService.getScriptProperties();
-    if (props.getProperty("last_update_id") === updateId) return okResponse();
-    props.setProperty("last_update_id", updateId);
-
-    const msg = update.message || update.edited_message;
-    if (!msg || !msg.text) return okResponse();
-
-    const chatId = msg.chat.id.toString();
-    const texto  = msg.text.trim();
-
-    if (texto.startsWith("/nueva"))            manejarNueva(chatId, texto);
-    else if (texto.startsWith("/ver"))         manejarVer(chatId, texto);
-    else if (texto.startsWith("/hoy"))         manejarHoy(chatId);
-    else if (texto.startsWith("/dictionary"))  manejarDictionary(chatId, texto);
-    else if (texto.startsWith("/intervalos"))  manejarIntervalos(chatId, texto);
-    else if (texto.startsWith("/")) {
-      responderTelegram(chatId,
-        "🤖 Comandos disponibles:\n\n" +
-        "/nueva <code>DD/MM/YYYY | p1 | p2 | p3 | idioma</code>\n" +
-        "/ver <code>DD/MM/YYYY</code>\n" +
-        "/hoy\n" +
-        "/dictionary <code>[DD/MM/YYYY]</code>  — palabras sueltas guardadas ese día\n" +
-        "/intervalos <code>30 14 7 3</code>  — cambia intervalos\n" +
-        "/intervalos <code>reset</code>  — vuelve al default\n\n" +
-        "También podés escribirme una palabra suelta (sin \"/\") y la guardo directo."
-      );
-    }
-    else {
-      // Texto libre -> se guarda rápido en el Inbox, sin tocar
-      // WoerterDesTages (eso lo hace el trigger procesarInbox aparte)
-      guardarEnInbox(chatId, texto);
-      responderTelegram(chatId, `📥 <b>${texto}</b> guardada. Se escribe en la hoja en el próximo minuto.`);
-    }
+    const update = JSON.parse(e.postData.contents);
+    procesarUpdateTelegram(update);
   } catch(err) {
     Logger.log("doPost error: " + err.message);
   }
   return okResponse();
+}
+
+// ============================================================
+// Ruteo de comandos — usado tanto por doPost (histórico) como por
+// pollTelegram (mecanismo vigente, ver Polling.gs)
+// ============================================================
+
+function procesarUpdateTelegram(update) {
+  const updateId = String(update.update_id);
+
+  // Deduplicación por update_id
+  const props = PropertiesService.getScriptProperties();
+  if (props.getProperty("last_update_id") === updateId) return;
+  props.setProperty("last_update_id", updateId);
+
+  const msg = update.message || update.edited_message;
+  if (!msg || !msg.text) return;
+
+  const chatId = msg.chat.id.toString();
+  const texto  = msg.text.trim();
+
+  if (texto.startsWith("/nueva"))            manejarNueva(chatId, texto);
+  else if (texto.startsWith("/ver"))         manejarVer(chatId, texto);
+  else if (texto.startsWith("/hoy"))         manejarHoy(chatId);
+  else if (texto.startsWith("/dictionary"))  manejarDictionary(chatId, texto);
+  else if (texto.startsWith("/intervalos"))  manejarIntervalos(chatId, texto);
+  else if (texto.startsWith("/")) {
+    responderTelegram(chatId,
+      "🤖 Comandos disponibles:\n\n" +
+      "/nueva <code>DD/MM, idioma, p1, p2, p3</code>  — 1 a 3 palabras\n" +
+      "/ver <code>DD/MM/YYYY</code>\n" +
+      "/hoy\n" +
+      "/dictionary <code>[DD/MM/YYYY]</code>  — palabras sueltas guardadas ese día\n" +
+      "/intervalos <code>30 14 7 3</code>  — cambia intervalos\n" +
+      "/intervalos <code>reset</code>  — vuelve al default\n\n" +
+      "También podés escribirme una palabra suelta (sin \"/\") y la guardo directo."
+    );
+  }
+  else {
+    // Texto libre -> se guarda rápido en el Inbox, sin tocar
+    // WoerterDesTages (eso lo hace el trigger tick() aparte)
+    guardarEnInbox(chatId, texto);
+    responderTelegram(chatId, `📥 <b>${texto}</b> guardada. Se escribe en la hoja en el próximo minuto.`);
+  }
 }
 
 function okResponse() {
@@ -138,31 +152,41 @@ function obtenerIntervalosF() {
 
 function manejarNueva(chatId, texto) {
   const sinComando = texto.replace(/^\/nueva\s*/i, "").trim();
-  const partes     = sinComando.split("|").map(s => s.trim());
+  const partes     = sinComando.split(",").map(s => s.trim()).filter(s => s.length > 0);
 
-  if (partes.length < 5) {
+  if (partes.length < 3) {
     responderTelegram(chatId,
-      "⚠️ Formato:\n<code>/nueva DD/MM/YYYY | p1 | p2 | p3 | idioma</code>\n\n" +
-      "Ejemplo:\n<code>/nueva 25/06/2026 | absolvieren | hingehen | ertragen | de</code>"
+      "⚠️ Formato:\n<code>/nueva DD/MM, idioma, p1, p2, p3</code>\n" +
+      "(entre 1 y 3 palabras)\n\n" +
+      "Ejemplo:\n<code>/nueva 25/06, de, absolvieren, hingehen, ertragen</code>"
     );
     return;
   }
 
-  const datos = { fecha: partes[0], palabra1: partes[1], palabra2: partes[2], palabra3: partes[3], idioma: partes[4].toLowerCase() };
+  const fechaCorta = partes[0];
+  const idioma     = partes[1].toLowerCase();
+  const palabras   = partes.slice(2, 5);
 
-  if (!datos.fecha.match(/^\d{2}\/\d{2}\/\d{4}$/)) {
-    responderTelegram(chatId, "⚠️ Fecha inválida. Formato: <code>DD/MM/YYYY</code>"); return;
+  if (!fechaCorta.match(/^\d{2}\/\d{2}$/)) {
+    responderTelegram(chatId, "⚠️ Fecha inválida. Formato: <code>DD/MM</code> (sin año, se usa el año actual)"); return;
   }
-  if (!["de","en"].includes(datos.idioma)) {
+  if (!["de","en"].includes(idioma)) {
     responderTelegram(chatId, "⚠️ Idioma: <code>de</code> o <code>en</code>"); return;
   }
+  if (palabras.length === 0 || palabras.some(p => !p)) {
+    responderTelegram(chatId, "⚠️ Enviá entre 1 y 3 palabras."); return;
+  }
+
+  const anioActual = Utilities.formatDate(new Date(), ZONA_HOR_F, "yyyy");
+  const fecha       = `${fechaCorta}/${anioActual}`;
+  const datos       = { fecha, idioma, palabras };
 
   const res      = guardarPalabras(datos);
-  const bandera  = datos.idioma === "en" ? "🇬🇧" : "🇩🇪";
+  const bandera  = idioma === "en" ? "🇬🇧" : "🇩🇪";
 
   responderTelegram(chatId, res.ok
-    ? `${res.nueva ? "✅ Fila nueva" : "✏️ Actualizada"} · ${datos.fecha}\n\n` +
-      `${bandera} <b>${datos.palabra1}</b>  ·  <b>${datos.palabra2}</b>  ·  <b>${datos.palabra3}</b>`
+    ? `${res.nueva ? "✅ Fila nueva" : "✏️ Actualizada"} · ${fecha}\n\n` +
+      `${bandera} ` + palabras.map(p => `<b>${p}</b>`).join("  ·  ")
     : `❌ ${res.mensaje}`
   );
 }
@@ -248,20 +272,20 @@ function guardarPalabras(datos) {
       if (f && f.getTime() === target.getTime()) { fila = i+1; break; }
     }
 
-    const words = [datos.palabra1.trim(), datos.palabra2.trim(), datos.palabra3.trim()];
+    // Acepta datos.palabras (array, 1-3 elementos, usado por /nueva) o
+    // datos.palabra1/2/3 (usado por el formulario web, paginaHTML).
+    const words = datos.palabras
+      ? datos.palabras.map(w => w.trim())
+      : [datos.palabra1, datos.palabra2, datos.palabra3].filter(w => w).map(w => w.trim());
 
     if (fila === -1) {
       const nueva = hoja.getLastRow() + 1;
       hoja.getRange(nueva, 2).setValue(datos.fecha.trim());
-      hoja.getRange(nueva, 3).setValue(words[0]);
-      hoja.getRange(nueva, 4).setValue(words[1]);
-      hoja.getRange(nueva, 5).setValue(words[2]);
+      words.forEach((w, i) => hoja.getRange(nueva, 3 + i).setValue(w));
       hoja.getRange(nueva, 6).setValue(datos.idioma);
       return { ok: true, mensaje: "Fila nueva.", nueva: true };
     } else {
-      hoja.getRange(fila, 3).setValue(words[0]);
-      hoja.getRange(fila, 4).setValue(words[1]);
-      hoja.getRange(fila, 5).setValue(words[2]);
+      words.forEach((w, i) => hoja.getRange(fila, 3 + i).setValue(w));
       hoja.getRange(fila, 6).setValue(datos.idioma);
       return { ok: true, mensaje: "Fila actualizada.", nueva: false };
     }
