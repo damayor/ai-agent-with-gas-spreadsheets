@@ -5,7 +5,7 @@ function limpiarCalendario() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   
   // Limpiar colores del área de calendario (C2:I49)
-  sheet.getRange(2, 2, 48, 7).setBackground('#ffffff');
+  sheet.getRange("C2:I49").setBackground('#ffffff');
   
   SpreadsheetApp.getUi().alert('✅ Calendario limpiado!');
 }
@@ -27,6 +27,8 @@ function aplicarFormatoCondicional() {
       var palabras = tablaRef[i][0].toString().split(",");
       var patron = palabras.map(p => "REGEXMATCH(LOWER(C2); \"" + p.trim().toLowerCase() + "\")").join("; ");
       var formula = "=OR(" + patron + ")";
+      
+     // var formula = "=AND(LEN(C2)>0, OR(" + patron + "))";
       var color = colores[i][0];
       
       var regla = SpreadsheetApp.newConditionalFormatRule()
@@ -86,19 +88,94 @@ function onEdit(e) {
   if (rango.getA1Notation() === "N13" && rango.getValue() === true) {
     actualizarHorasPorActividad(); // Aquí llamas a tu método
 
-    for (let i = 0; i < 7  ; i++) {
-     HORAS_LABORALES(i+3, 2, 49 ); 
-    }
+    actualizarHorasLaboralesFila52();
 
     rango.setValue(false); // Reinicia el "botón"
   }
-/*
+  /*
   if (rango.getA1Notation() === "B55" && rango.getValue() === true) {
     for (let i = 0; i < 7  ; i++) {
      HORAS_LABORALES(i+3, 2, 49 ); 
     }
     rango.setValue(false); // Reinicia el "botón"
   }*/
+
+  if (rango.getA1Notation() === "N5" && rango.getValue() === true) {
+      const hoja = SpreadsheetApp.getActiveSheet();
+
+      const targetRange = hoja.getRange("C2:I49");
+      console.log("bgs a blanco");
+
+
+      const values = targetRange.getValues();
+      const backgrounds = targetRange.getBackgrounds();
+
+      for (let r = 0; r < values.length; r++) {
+        for (let c = 0; c < values[r].length; c++) {
+          if (values[r][c] === "") {
+            backgrounds[r][c] = "#ffffff";
+          }
+      }
+    }
+  }
+  
+
+}
+
+// Calcula HORAS_LABORALES por columna (C..I, días de la semana) y pega
+// el resultado como valor plano en C52:I52 (B52 es etiqueta, no se
+// toca) — ya no vive como fórmula de celda (=HORAS_LABORALES(...)),
+// porque Sheets la recalculaba como función personalizada en cada
+// refresco/tick, cientos de veces por minuto (ver Ausführungen/
+// Executions). Se recalcula solo acá, al marcar el checkbox N13.
+function actualizarHorasLaboralesFila52() {
+  const hoja = SpreadsheetApp.getActiveSheet();
+  const valores = [];
+
+  for (let i = 0; i < 7; i++) {
+    valores.push(HORAS_LABORALES(i + 3, 2, 49));
+  }
+
+  hoja.getRange(52, 3, 1, 7).setValues([valores]); // fila 52, col 3 (C) a 9 (I)
+}
+
+// Recorre TODAS las hojas del spreadsheet y, donde C52:I52 tenga una
+// fórmula que llame a HORAS_LABORALES, la reemplaza por el valor plano
+// ya calculado (deja el número, no la fórmula viva). Correr UNA SOLA
+// VEZ a mano para migrar las hojas viejas — después de esto, cada hoja
+// se actualiza vía el checkbox N13 (ver onEdit / actualizarHorasLaboralesFila52).
+function limpiarFormulasHorasLaboralesTodasHojas() {
+  const hojas = SpreadsheetApp.getActiveSpreadsheet().getSheets();
+  let hojasTocadas = 0;
+
+  hojas.forEach(hoja => {
+    const rango = hoja.getRange(52, 3, 1, 7); // C52:I52
+    const formulas = rango.getFormulas()[0];
+
+    const tieneFormula = formulas.some(f => f.includes("HORAS_LABORALES"));
+    if (!tieneFormula) return;
+
+    const valores = rango.getValues()[0]; // valores ya calculados por la fórmula
+    rango.setValues([valores]); // pisa la fórmula con su propio resultado numérico
+
+    hojasTocadas++;
+    Logger.log(hoja.getName() + ": fórmulas reemplazadas por valores en C52:I52");
+  });
+
+  Logger.log(`Listo. Hojas modificadas: ${hojasTocadas} de ${hojas.length}.`);
+}
+
+function cleanEmptyCells() {
+    const stdRange = hoja.getRange("C2:I49");
+
+    var data = stdRange.getValues();
+    //Do a for
+    if (rango.getValue() === "") {
+        rango.setBackground("#ffffff"); // Set to white when empty
+    }
+    
+
+  
 }
 
 
@@ -107,12 +184,14 @@ function HORAS_LABORALES(columna, filaInicio, filaFin) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const activeSheet = ss.getActiveSheet();
   var targetColors = activeSheet.getRange(`L22:L31`).getBackgrounds().flat();
+  var arbeitColors = activeSheet.getRange(`L39`).getBackgrounds().flat();
+
   const range = activeSheet.getRange(filaInicio, columna, filaFin - filaInicio + 1, 1);
   const backgrounds = range.getBackgrounds().flat();
   const fontLines = range.getFontLines().flat();
+  const valores = range.getValues().flat();
 
-  //console.log("backgrounds", backgrounds);
-  //console.log("fontLines", fontLines);
+  console.log("backgrounds", arbeitColors);
 
   let totalHoras = 0;
 
@@ -120,12 +199,41 @@ function HORAS_LABORALES(columna, filaInicio, filaFin) {
     const color = backgrounds[i];
     const tachado = fontLines[i] === "line-through";
     if (targetColors.includes(color.toLowerCase()) && !tachado) {
+      // Ticket #8: celdas escritas vía Telegram con sufijo "/2" (ver
+      // procesarActividad en verbindung.gs) marcan que el mensaje llegó
+      // en la 2da mitad del bloque de 30 min -> cuentan 0.25h en vez de
+      // las 0.5h de un bloque completo.
+      const esMedioBloque = String(valores[i]).includes("/2");
+      totalHoras += esMedioBloque ? 0.5 : 1; // en unidades de 0.25h, se multiplica x0.25 abajo
+    }
+
+  }
+
+  const horas = totalHoras * 0.25;
+  console.log(activeSheet.getName() + " - Horas de la col ", columna, ": ", horas);
+  return horas;
+}
+
+function HORAS_LAB_DISPONIBLES(columna, filaInicio, filaFin) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const activeSheet = ss.getActiveSheet();
+  var targetColor = "#990000"
+  const range = activeSheet.getRange(filaInicio, columna, filaFin - filaInicio + 1, 1);
+  const backgrounds = range.getBackgrounds().flat();
+  const fontLines = range.getFontLines().flat();
+
+  let totalHoras = 0;
+
+  for (let i = 0; i < backgrounds.length; i++) {
+    const color = backgrounds[i];
+    
+    if (targetColor ==  color.toLowerCase() ) {
       totalHoras++;
     }
 
   }
   
-  console.log("Horas de la col ", columna, ": ", totalHoras * 0.5);
+  console.log(activeSheet.getName() + "Horas de la col ", columna, ": ", totalHoras * 0.5);
   return totalHoras * 0.5;
 }
 
@@ -146,17 +254,6 @@ function CUMPLE_8H(sumRangeA1, metaHoras = 8) {
 
 
 
-function doGet(e) {
-  console.log("trying to GET" + SPREADSHEET_ID)  
-  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheets()[0];
-
-  sheet.getRange("C89").setValue("Hello World GET");
-
-  return ContentService
-    .createTextOutput("ok")
-    .setMimeType(ContentService.MimeType.TEXT);
-}
-
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('📅 Calendario Semanal')
@@ -164,278 +261,279 @@ function onOpen() {
     .addItem('Sincronizar tags con colores', 'aplicarFormatoCondicional')
     .addItem('Actualizar contar horas por color', 'actualizarHorasPorActividad')
     .addItem('Test solo para update HORAS_LAB', 'test')
+    .addItem('distribuirProyectos', 'distribuirProyectos')
     .addToUi();
 }
 
 function test() {
   
-  HORAS_LABORALES(9, 2, 49)
+  
+    for (let i = 0; i < 7  ; i++) {
+     HORAS_LABORALES(i+3, 2, 49 ); 
+    }
+    rango.setValue(false); // Reinicia el "botón"
+  
   //actualizarHorasPorActividad()
 
 }
 
-//M to S in Columnas 3 to 9
-function calcularFila(date){
-
-  const h = date.getHours();
-  const m = date.getMinutes();
-
-  return 2 + (h * 2) + (m >= 30 ? 1 : 0);
-} 
-
-function calcularColumna(date){
-
-  const day = date.getDay(); // 0 domingo
-  return day === 0 ? 9 : day + 2;
-}
-
-function testCelda(tag) {
-
-  const sheet = SpreadsheetApp
-    .openById(SPREADSHEET_ID)
-    .getSheets()[0];
-
-  const now = new Date();
-
-  const fila = calcularFila(now);
-  const col = calcularColumna(now);
-  console.log("row and column to update ", fila,";",  col)
-
-  const cell = sheet.getRange(fila, col);
-
-  cell.setValue(tag);
-
-}
-
-//ToTest  9:05  Unity,false
-function procesarActividad(tag, isEnding){
-
-  const sheet = SpreadsheetApp
-    .openById(SPREADSHEET_ID)
-    .getSheets()[0];
-  const now = new Date();
-
-  let minutes = now.getMinutes();
-  let hours = now.getHours();
-
-  // calcular siguiente bloque
-  let nextBlock = null;
-
-  if (minutes <= 30) {
-    nextBlock = 30;
-  } else {
-    nextBlock = 60;
-  }
-
-  const minutesToNext = nextBlock - minutes;
-
-  // si faltan 8 min o menos, saltamos al siguiente bloque
-  if (minutesToNext <= 5) {
-
-    if (nextBlock === 60) {
-      hours += 1;
-      minutes = 0;
-    } else {
-      minutes = 30;
-    }
-
-  } 
-  else {
-
-    if (minutes < 30) {
-      minutes = 0;
-    } else {
-      minutes = 30;
-    }
-
-  }
-
-  const adjusted = new Date(now);
-  adjusted.setHours(hours);
-  adjusted.setMinutes(minutes);
-  adjusted.setSeconds(0);
-
-  console.log("Hora original:", now);
-  console.log("Hora ajustada:", adjusted);
-
-  const row = calcularFila(adjusted);
-  const col = calcularColumna(adjusted);
-
-  console.log("Row:", row, "Col:", col);
-
-  const cell = sheet.getRange(row, col);
-
-  if (!isEnding) {
-
-    cell.setValue(tag);
-
-  } else {
-
-    cell.setValue("END"); //ToDo: To Fix here;
-
-  }
-}
-
-  const BOT_TOKEN = "8766703385:AAGy8i_2adBysloHoX09qc_KevBS29JeUuo";
-
-function clearTelegramWebhook() {
-  const TOKEN = "8766703385:AAGy8i_2adBysloHoX09qc_KevBS29JeUuo";
+function distribuirProyectos() {
+  var hoja = SpreadsheetApp.getActiveSheet();
   
-  // 1. Elimina y re-registra el webhook (limpia la cola)
-  const del = UrlFetchApp.fetch(`https://api.telegram.org/bot${TOKEN}/deleteWebhook?drop_pending_updates=true`);
+  // GUARDAR ESTADO ANTERIOR PARA DESHACER
+  //guardarEstadoAnterior();
   
-  console.log("Delete:", del.getContentText());
-
-  const WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbz03ZcenVhTC8aOZtxfYw7yJ2mFiQ9pWEdwZMHAoRbLrh6yk5gQcrwRY3tgv95ZV3RnAQ/exec"
-  const set = UrlFetchApp.fetch(`https://api.telegram.org/bot${TOKEN}/setWebhook?url=${WEBHOOK_URL}&drop_pending_updates=true`);
+  // 1. LEER PROYECTOS (filas 22-31)
+  var proyectos = [];
+  var datosProyectos = hoja.getRange("K22:S31").getValues();
   
-  console.log("Webhook limpiado y re-registrado");
-  console.log("Set:", set.getContentText());
-
-}
-
-function backDoPost(e) {
-  console.log("Webhook triggered 15.3");
-  
-  const CHAT_ID = 8520405167; // tu chat personal con el bot
-
-  SpreadsheetApp.flush(); // fuerza contexto de ejecución loggeable
-  console.log("RAW:", JSON.stringify(e));
-
-  try {
-    console.log(e.postData.contents);
-
-
-    const data = JSON.parse(e.postData.contents);
-
-    // Last try Envíate el update_id y texto como mensaje de Telegram
-    const updateId = data.update_id?.toString();
-    const msgText = data.message?.text || "sin texto";
+  for (var i = 0; i < datosProyectos.length; i++) {
+    var tags = datosProyectos[i][0]; // Columna K
+    var horasObjetivo = datosProyectos[i][4]; // Columna O
+    var bloques = datosProyectos[i][8]; // Columna S
     
-    UrlFetchApp.fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-      method: "post",
-      contentType: "application/json",
-      payload: JSON.stringify({
-        chat_id: CHAT_ID,
-        text: `update_id: ${updateId}\ntexto: ${msgText}`
-      })
-    });
-
-    // ✅ Siempre responder OK aunque no haya mensaje
-    if (!data.message || !data.message.text) {
-      return ContentService.createTextOutput("ok");
+    if (tags && horasObjetivo > 0) {
+      var nombreProyecto = tags.toString().split(",")[0].trim();
+      var tamanosBloques = bloques.toString().split(",").map(function(b) {
+        return parseFloat(b.trim());
+      }).filter(function(b) { return !isNaN(b); });
+      
+      proyectos.push({
+        nombre: nombreProyecto,
+        horasObjetivo: parseFloat(horasObjetivo),
+        tamanosBloques: tamanosBloques,
+        horasAsignadas: 0,
+        asignacionesPorDia: [0, 0, 0, 0, 0, 0, 0] // Contador por día
+      });
     }
-
-    // ✅ Deduplicar por update_id para evitar el loop
-    console.log("updateId", updateId);
-    if (updateId) {
-      const cache = CacheService.getScriptCache();
-      if (cache.get(updateId)) {
-        console.log("Update ya procesado, ignorando:", updateId);
-        return ContentService.createTextOutput("ok");
-      }
-      cache.put(updateId, "1", 3600); // guarda por 1 hora
-    }
-
-    const text = data.message.text;
-    const parts = text.split(",");
-
-    const tag = parts[0];
-    const isEnding = parts[1] === "end";
-
-    console.log("tag:", tag, "| isEnding:", isEnding);
-
-    const output = ContentService.createTextOutput("ok");
-
-    //procesarActividad(tag, isEnding);
-
-    return output;
   }
-  catch(err){
-    console.error("ERRORRR:", err.toString());
-
-    console.error(err);
-    return ContentService.createTextOutput("ok");
-
-  }
-}
-
-function doPost(e) {
-
-  console.log("Webhook triggered 19.3");
   
-  const CHAT_ID = 8520405167; // tu chat personal con el bot
-
-  SpreadsheetApp.flush(); // fuerza contexto de ejecución loggeable
-  console.log("RAW:", JSON.stringify(e));
-
-
-  try {
-    const data = JSON.parse(e.postData.contents);
-    const updateId = data.update_id?.toString();
-
-    // 🔒 Lock para evitar concurrencia
-    const lock = LockService.getScriptLock();
-    lock.waitLock(3000);
-
-    try {
-      // ✅ PropertiesService persiste entre instancias (CacheService no garantiza esto)
-      const props = PropertiesService.getScriptProperties();
-      if (updateId && props.getProperty(updateId)) {
-        console.log("Duplicado bloqueado:", updateId);
-        return ContentService.createTextOutput("ok");
-      }
-      if (updateId) props.setProperty(updateId, "1");
-    } finally {
-      lock.releaseLock();
-    }
-
-    if (!data.message?.text) {
-      return ContentService.createTextOutput("ok");
-    }
-
-    const text = data.message.text;
-    const parts = text.split(",");
-    const tag = parts[0].trim();
-    const isEnding = parts[1]?.trim() === "end";
-
-    console.log("update_id:", updateId, "| tag:", tag, "| isEnding:", isEnding);
-
-    UrlFetchApp.fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-      method: "post",
-      contentType: "application/json",
-      payload: JSON.stringify({
-        chat_id: CHAT_ID,
-        text: `✅ update_id: ${updateId}\ntag: ${tag}\nisEnding: ${isEnding}`
-      })
-    });
-
-    procesarActividad(tag, isEnding);
-
-    return ContentService.createTextOutput("ok");
-
-  } catch(err) {
-    console.error("ERROR:", err.toString());
-    return ContentService.createTextOutput("ok");
-  }
-}
-
-function limpiarProperties() {
-  PropertiesService.getScriptProperties().deleteAllProperties();
-}
-
-function testDoPost() {
-
-  const fakeEvent = {
-    postData: {
-      contents: JSON.stringify({
-        message: {
-          text: "Hamburg, init"
+  Logger.log("Proyectos detectados: " + proyectos.length);
+  
+  // 2. DETECTAR BLOQUES ROJOS DISPONIBLES (C2:I49)
+  var rangoCalendario = hoja.getRange("C2:I49");
+  var valores = rangoCalendario.getValues();
+  var colores = rangoCalendario.getBackgrounds();
+  
+  var bloquesLibres = [];
+  
+  // Detectar bloques rojos consecutivos
+  for (var col = 0; col < 7; col++) { // 7 días (C a I)
+    var bloqueActual = null;
+    
+    for (var fila = 0; fila < valores.length; fila++) {
+      var color = colores[fila][col].toLowerCase();
+      var esRojo = color.includes("99") || color.includes("cc0000") || 
+                   color.includes("8b0000") || color.includes("a00000") ||
+                   color.includes("800000");
+      
+      if (esRojo) {
+        if (bloqueActual === null) {
+          bloqueActual = {
+            col: col,
+            filaInicio: fila,
+            tamanioOriginal: 0.5,
+            fragmentos: [] // Para trackear cómo se subdivide
+          };
+        } else {
+          bloqueActual.tamanioOriginal += 0.5;
         }
-      })
+      } else {
+        if (bloqueActual !== null) {
+          bloquesLibres.push(bloqueActual);
+          bloqueActual = null;
+        }
+      }
     }
-  };
+    
+    if (bloqueActual !== null) {
+      bloquesLibres.push(bloqueActual);
+    }
+  }
+  
+  Logger.log("Bloques libres detectados: " + bloquesLibres.length);
+  
+  // 3. ALGORITMO DE ASIGNACIÓN MEJORADO
+  var asignaciones = [];
+  
+  // Round-robin: asignar 1 bloque por proyecto en cada pasada
+  var proyectosActivos = proyectos.slice();
+  var intentos = 0;
+  var maxIntentos = 1000; // Evitar loops infinitos
 
-  doPost(fakeEvent);
+  // Ordenar proyectos: primero los que tienen bloques más grandes
+  proyectos.sort(function(a, b) {
+    var maxBloqueA = Math.max.apply(Math, a.tamanosBloques);
+    var maxBloqueB = Math.max.apply(Math, b.tamanosBloques);
+    return maxBloqueB - maxBloqueA; // Mayor a menor
+  });
 
+  // Ordenar bloques libres: primero los más grandes
+  bloquesLibres.sort(function(a, b) {
+    return b.tamanioOriginal - a.tamanioOriginal;
+  });
+    
+  while (proyectosActivos.length > 0 && intentos < maxIntentos) {
+    intentos++;
+    
+    for (var p = proyectosActivos.length - 1; p >= 0; p--) {
+      var proyecto = proyectosActivos[p];
+      
+      if (proyecto.horasAsignadas >= proyecto.horasObjetivo) {
+        proyectosActivos.splice(p, 1);
+        continue;
+      }
+      
+      // Calcular horas restantes
+      var horasRestantes = proyecto.horasObjetivo - proyecto.horasAsignadas;
+      
+      // Seleccionar tamanio de bloque ideal
+      var tamanioDeseado = seleccionarTamanioBloque(proyecto.tamanosBloques, horasRestantes);
+      
+      // Buscar el mejor bloque disponible
+      var mejorBloque = encontrarMejorBloque(bloquesLibres, proyecto, tamanioDeseado);
+      
+      if (mejorBloque) {
+        // Asignar
+        var horasAAsignar = Math.min(tamanioDeseado, mejorBloque.bloque.tamanioOriginal, horasRestantes);
+        
+        asignaciones.push({
+          proyecto: proyecto.nombre,
+          col: mejorBloque.bloque.col,
+          filaInicio: mejorBloque.bloque.filaInicio,
+          tamanio: horasAAsignar
+        });
+        
+        proyecto.horasAsignadas += horasAAsignar;
+        proyecto.asignacionesPorDia[mejorBloque.bloque.col] += horasAAsignar;
+        
+        // Actualizar el bloque libre
+        var numCeldas = Math.round(horasAAsignar * 2);
+        mejorBloque.bloque.filaInicio += numCeldas;
+        mejorBloque.bloque.tamanioOriginal -= horasAAsignar;
+        
+        if (mejorBloque.bloque.tamanioOriginal <= 0) {
+          bloquesLibres.splice(mejorBloque.indice, 1);
+        }
+      } else {
+        // No hay más bloques para este proyecto
+        Logger.log("⚠️ No hay más bloques disponibles para " + proyecto.nombre);
+        proyectosActivos.splice(p, 1);
+      }
+    }
+  }
+  
+  // 4. ESCRIBIR ASIGNACIONES EN EL CALENDARIO
+  for (var a = 0; a < asignaciones.length; a++) {
+    var asig = asignaciones[a];
+    var numCeldas = Math.round(asig.tamanio * 2);
+    
+    for (var c = 0; c < numCeldas; c++) {
+      var fila = asig.filaInicio + c + 2;
+      var columna = asig.col + 3;
+      
+      hoja.getRange(fila, columna).setValue(asig.proyecto);
+    }
+  }
+
+  actualizarHorasPorActividad();
+  
+  // 5. REPORTE
+  var mensaje = "✅ Distribución completada:\n\n";
+  proyectos.forEach(function(p) {
+    mensaje += p.nombre + ": " + p.horasAsignadas + "h de " + p.horasObjetivo + "h";
+    if (p.horasAsignadas >= p.horasObjetivo) {
+      mensaje += " ✓\n";
+    } else {
+      mensaje += " ⚠️\n";
+    }
+  });
+
+
+  
+  SpreadsheetApp.getUi().alert(mensaje);
 }
+
+// Función para seleccionar el mejor tamanio de bloque
+function seleccionarTamanioBloque(tamaniosDisponibles, horasRestantes) {
+  // Ordenar de mayor a menor
+  var ordenados = tamaniosDisponibles.slice().sort(function(a, b) { return b - a; });
+  
+  // Intentar usar el más grande que quepa
+  for (var i = 0; i < ordenados.length; i++) {
+    if (ordenados[i] <= horasRestantes) {
+      return ordenados[i];
+    }
+  }
+  
+  // Si ninguno cabe, usar el más pequenio
+  return ordenados[ordenados.length - 1];
+}
+// Función para encontrar el mejor bloque (prioriza distribución en la semana)
+function encontrarMejorBloque(bloquesLibres, proyecto, tamanioDeseado) {
+  var candidatos = [];
+  
+  for (var i = 0; i < bloquesLibres.length; i++) {
+    var bloque = bloquesLibres[i];
+    
+    if (bloque.tamañoOriginal >= tamanioDeseado || bloque.tamanioOriginal >= 0.5) {
+      // Calcular score: priorizar días con menos asignaciones de este proyecto
+      var horasEnEsteDia = proyecto.asignacionesPorDia[bloque.col];
+      var score = -horasEnEsteDia; // Menor score = mejor (menos saturado)
+      
+      candidatos.push({
+        bloque: bloque,
+        indice: i,
+        score: score
+      });
+    }
+  }
+  
+  if (candidatos.length === 0) {
+    return null;
+  }
+  
+  // Ordenar por score (mejor primero)
+  candidatos.sort(function(a, b) { return b.score - a.score; });
+  
+  // Tomar uno de los top 3 aleatoriamente para más variedad
+  var topCandidatos = candidatos.slice(0, Math.min(3, candidatos.length));
+  return topCandidatos[Math.floor(Math.random() * topCandidatos.length)];
+}
+
+// ============================================
+// FUNCIONES PARA DESHACER
+// ============================================
+
+// Función para limpiar solo los proyectos asignados y dejar las celdas rojas con el tag Arbeit!
+function limpiarProyectos() {
+  var hoja = SpreadsheetApp.getActiveSheet();
+  var rango = hoja.getRange("C2:I49");
+  var valores = rango.getValues();
+  
+  // Leer nombres de proyectos
+  var datosProyectos = hoja.getRange("K22:K31").getValues();
+  var nombresProyectos = [];
+  
+  for (var i = 0; i < datosProyectos.length; i++) {
+    if (datosProyectos[i][0]) {
+      var nombre = datosProyectos[i][0].toString().split(",")[0].trim();
+      nombresProyectos.push(nombre);
+    }
+  }
+  
+  // Limpiar celdas que contengan nombres de proyectos
+  for (var i = 0; i < valores.length; i++) {
+    for (var j = 0; j < valores[i].length; j++) {
+      var valorCelda = valores[i][j].toString().trim();
+      
+      if (nombresProyectos.indexOf(valorCelda) !== -1) {
+        valores[i][j] = "Arbeit";
+      }
+    }
+  }
+  
+  rango.setValues(valores);
+  SpreadsheetApp.getUi().alert("✅ Proyectos limpiados. Celdas rojas intactas.");
+}
+
