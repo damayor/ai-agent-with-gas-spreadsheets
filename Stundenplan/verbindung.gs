@@ -53,7 +53,7 @@ function testCelda(tag) {
 }
 
 //ToTest  9:05  Unity
-function procesarActividad(tag){
+function procesarActividad(tag, isEnding = false){
 
   const sheet = SpreadsheetApp
     .openById(SPREADSHEET_ID)
@@ -120,13 +120,18 @@ function procesarActividad(tag){
   // 0.5h. Si el mensaje ya saltó al siguiente bloque por el margen de
   // 5 min (saltoDeBloque), se considera que arrancó ese bloque nuevo
   // -> nunca es "/2" en ese caso.
+  // Ticket #10: "Tag,end" marca cierre temprano de actividad -> el bloque
+  // actual/entrante siempre cuenta como medio bloque (/2), sin importar el
+  // minuto real en que llegó el END (a diferencia de la regla >=15 de arriba,
+  // que es para inicios tardíos, no para cierres).
   const minutoDentroDelBloque = minutoReal % 30;
-  const esMedioBloque = !saltoDeBloque && minutoDentroDelBloque >= 15;
+  const esMedioBloque = isEnding || (!saltoDeBloque && minutoDentroDelBloque >= 15);
 
   const minutoTexto = (minutoReal < 10 ? "0" : "") + minutoReal;
+  const tagConEnding = isEnding ? `${tag} END` : tag;
   const valorCelda = esMedioBloque
-    ? `${tag} /2 :${minutoTexto}`
-    : `${tag} :${minutoTexto}`;
+    ? `${tagConEnding} /2 :${minutoTexto}`
+    : `${tagConEnding} :${minutoTexto}`;
 
   console.log("Escribiendo en celda", cell.getA1Notation(),
     "(fila", row, "col", col, ") — día:", adjusted.getDay(),
@@ -191,9 +196,11 @@ function procesarUpdateTelegram(update) {
 
   if (!msgText) return;
 
-  const tag = msgText.split(",")[0].trim();
+  const parts = msgText.split(",").map(p => p.trim());
+  const tag = parts[0];
+  const isEnding = parts[1]?.toLowerCase() === "end";
 
-  console.log("tag:", tag);
+  console.log("tag:", tag, "| isEnding:", isEnding);
 
   const token = getBotToken();
   if (chatId) {
@@ -212,7 +219,7 @@ function procesarUpdateTelegram(update) {
     }
   }
 
-  procesarActividad(tag);
+  procesarActividad(tag, isEnding);
 }
 
 // NOTA (migración a polling): doPost queda sin usar una vez corrido

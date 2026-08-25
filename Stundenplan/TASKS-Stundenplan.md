@@ -132,3 +132,35 @@ polling (ver [context.md](context.md) para el detalle completo de la migración)
       **A tener en cuenta**: si luego alguien reescribe manualmente esa celda (para
       corregir un tag, por ejemplo), el formato bold+italic queda pegado a menos que se
       quite a mano — no hay lógica que lo revierta automáticamente.
+
+- [x] **10. Soportar cierre temprano de actividad: "Tag END" en los primeros ~15 min de un bloque.**
+      Caso de uso: mandas `"Freelancer END"` a las 15:45 (±5 min). El bloque 15:30-15:59
+      recién empieza a esa hora, pero la actividad solo se trabajó esos primeros minutos
+      antes de terminar — debe contar como **medio bloque (0.25h)**, igual que la regla
+      `/2` del ticket 8, pero para el caso simétrico: ahí `/2` se dispara cuando el
+      mensaje llega tarde dentro del bloque (minuto >= 15); acá se dispara cuando el
+      mensaje llega temprano pero marca *fin*, no inicio.
+
+      Definición acordada (2026-08-18):
+      - El mensaje `"Tag END"` a las 15:45 marca el bloque **actual/entrante**
+        (15:30-15:59, no el anterior) con `/2`, porque solo se alcanzó a trabajar la
+        primera mitad antes de cerrar.
+      - Formato de celda: mismo patrón que ya existe (`tag` + `/2` + `:MM`), agregando la
+        palabra `END` para diferenciarlo de un inicio normal de actividad. Ej. resultado
+        esperado: `"Freelancer END /2 :45"`.
+
+      Decisiones finales (2026-08-19):
+      - Formato del mensaje: **con coma**, `"Tag,end"` (reintroduce el patrón viejo en vez
+        de texto libre) — parseo inequívoco vía `split(",")`, sin riesgo de que un tag real
+        contenga la palabra END.
+      - `/2` se marca **siempre** que el mensaje sea un cierre (`isEnding`), sin importar el
+        minuto real ni `saltoDeBloque` — no hay caso "minuto >= 15 -> bloque completo" para
+        cierres, a diferencia de la regla de inicios tardíos.
+
+      Implementado:
+      - `procesarUpdateTelegram` (verbindung.gs): parsea `parts[1]?.toLowerCase() === "end"`
+        y pasa `isEnding` a `procesarActividad(tag, isEnding)`.
+      - `procesarActividad`: nuevo parámetro `isEnding = false`. Cuando es `true`, fuerza
+        `esMedioBloque = true` y antepone `" END"` al tag en la celda — resultado ej.
+        `"Freelancer END /2 :45"`.
+      - `HORAS_LABORALES` no requirió cambios — ya lee `/2` por substring (ticket 8).

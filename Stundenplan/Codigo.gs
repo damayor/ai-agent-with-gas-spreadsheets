@@ -52,6 +52,7 @@ function actualizarHorasPorActividad() {
 
   const backgrounds = range.getBackgrounds().flat();
   const fontLines = range.getFontLines().flat();
+  const valores = range.getValues().flat();
 
   console.log("backgrounds", backgrounds);
   console.log("fontLines", fontLines);
@@ -59,13 +60,17 @@ function actualizarHorasPorActividad() {
   const conteo = {};
 
   // 1. Contar todos los backgrounds en una sola pasada
+  // Ticket #8: celdas escritas vía Telegram con sufijo "/2" cuentan
+  // 0.25h en vez de las 0.5h de un bloque completo (ver HORAS_LABORALES).
   for (let i = 0; i < backgrounds.length; i++) {
 
       const color = backgrounds[i];
       const tachado = fontLines[i] === "line-through";
-      if(!tachado)
-        conteo[color] = (conteo[color] || 0) +  1;
-    
+      if (!tachado) {
+        const esMedioBloque = String(valores[i]).includes("/2");
+        conteo[color] = (conteo[color] || 0) + (esMedioBloque ? 0.5 : 1);
+      }
+
   }
 
   // 2. Leer lista de backgrounds (ej: M17:M39)
@@ -204,7 +209,7 @@ function HORAS_LABORALES(columna, filaInicio, filaFin) {
       // en la 2da mitad del bloque de 30 min -> cuentan 0.25h en vez de
       // las 0.5h de un bloque completo.
       const esMedioBloque = String(valores[i]).includes("/2");
-      totalHoras += esMedioBloque ? 0.5 : 1; // en unidades de 0.25h, se multiplica x0.25 abajo
+      totalHoras += esMedioBloque ? 1 : 2; // en unidades de 0.25h, se multiplica x0.25 abajo
     }
 
   }
