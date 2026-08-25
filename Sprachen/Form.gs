@@ -1,11 +1,10 @@
 // ============================================================
-// WOERTER DES TAGES — Formulario web + Telegram Webhook
+// WOERTER DES TAGES — Telegram Webhook (histórico) + comandos
 // ============================================================
 // Comandos Telegram:
 //   /nueva DD/MM, idioma, p1, p2, p3   (1 a 3 palabras, sin año)
 //   /ver DD/MM/YYYY
 //   /hoy
-//   /dictionary [DD/MM/YYYY]
 //   /intervalos 30 14 7 3 2
 //   /intervalos reset
 //   (texto libre, sin "/")  -> se guarda como palabra suelta en col. R
@@ -14,17 +13,6 @@
 const ID_HOJA_F    = "1yYJzqZmJOvM6lMMXLdf_ZWMEaa0_vvDWDeu87T2sm38";
 const NOMBRE_TAB_F = "WoerterDesTages";
 const ZONA_HOR_F   = "Europe/Berlin";
-
-// ============================================================
-// doGet — Formulario web
-// ============================================================
-
-function doGet(e) {
-  const template = HtmlService.createHtmlOutput(paginaHTML());
-  template.setTitle("Wörter des Tages");
-  template.addMetaTag("viewport", "width=device-width, initial-scale=1");
-  return template;
-}
 
 // ============================================================
 // doPost — Webhook Telegram
@@ -67,25 +55,28 @@ function procesarUpdateTelegram(update) {
   if (texto.startsWith("/nueva"))            manejarNueva(chatId, texto);
   else if (texto.startsWith("/ver"))         manejarVer(chatId, texto);
   else if (texto.startsWith("/hoy"))         manejarHoy(chatId);
-  else if (texto.startsWith("/dictionary"))  manejarDictionary(chatId, texto);
   else if (texto.startsWith("/intervalos"))  manejarIntervalos(chatId, texto);
+  else if (texto.startsWith("/modo"))        manejarModo(chatId, texto);
   else if (texto.startsWith("/")) {
     responderTelegram(chatId,
       "🤖 Comandos disponibles:\n\n" +
       "/nueva <code>DD/MM, idioma, p1, p2, p3</code>  — 1 a 3 palabras\n" +
       "/ver <code>DD/MM/YYYY</code>\n" +
       "/hoy\n" +
-      "/dictionary <code>[DD/MM/YYYY]</code>  — palabras sueltas guardadas ese día\n" +
       "/intervalos <code>30 14 7 3</code>  — cambia intervalos\n" +
-      "/intervalos <code>reset</code>  — vuelve al default\n\n" +
-      "También podés escribirme una palabra suelta (sin \"/\") y la guardo directo."
+      "/intervalos <code>reset</code>  — vuelve al default\n" +
+      "/modo <code>input</code> | <code>output</code>  — a qué hoja va el texto libre\n\n" +
+      "También podés escribirme una palabra suelta (sin \"/\") y la guardo directo en la hoja del modo activo."
     );
   }
   else {
-    // Texto libre -> se guarda rápido en el Inbox, sin tocar
-    // WoerterDesTages (eso lo hace el trigger tick() aparte)
-    guardarEnInbox(chatId, texto);
-    responderTelegram(chatId, `📥 <b>${texto}</b> guardada. Se escribe en la hoja en el próximo minuto.`);
+    // Texto libre -> se escribe directo en VHS_INPUT o VHS_OUTPUT
+    // (columna B, próxima fila vacía) según el modo activo.
+    const res = guardarPalabraSuelta(texto);
+    responderTelegram(chatId, res.ok
+      ? `📥 <b>${texto}</b> en B${res.fila}.`
+      : `❌ ${res.mensaje}`
+    );
   }
 }
 
@@ -101,7 +92,7 @@ function manejarIntervalos(chatId, texto) {
   const args = texto.replace(/^\/intervalos\s*/i, "").trim();
 
   if (!args) {
-    const actuales = obtenerIntervalosF();
+    const actuales = obtenerIntervalos();
     responderTelegram(chatId,
       `📊 <b>Intervalos actuales:</b> ${actuales.map(d => `+${d}d`).join(" · ")}\n\n` +
       `Para cambiar: <code>/intervalos 30 14 7 3</code>\n` +
@@ -114,7 +105,7 @@ function manejarIntervalos(chatId, texto) {
     PropertiesService.getScriptProperties().deleteProperty("INTERVALOS");
     responderTelegram(chatId,
       `↩️ Intervalos reseteados al default.\n` +
-      `Actuales: ${obtenerIntervalosF().map(d => `+${d}d`).join(" · ")}`
+      `Actuales: ${obtenerIntervalos().map(d => `+${d}d`).join(" · ")}`
     );
     return;
   }
@@ -124,8 +115,8 @@ function manejarIntervalos(chatId, texto) {
     .map(s => parseInt(s.trim()))
     .filter(n => !isNaN(n) && n > 0);
 
-  if (nuevos.length === 0 || nuevos.length > 5) {
-    responderTelegram(chatId, "⚠️ Enviá entre 1 y 5 números. Ej: <code>/intervalos 30 14 7</code>");
+  if (nuevos.length === 0 || nuevos.length > 7) {
+    responderTelegram(chatId, "⚠️ Enviá entre 1 y 7 números. Ej: <code>/intervalos 30 14 7</code>");
     return;
   }
 
@@ -139,11 +130,94 @@ function manejarIntervalos(chatId, texto) {
   );
 }
 
-function obtenerIntervalosF() {
-  const props    = PropertiesService.getScriptProperties();
-  const guardado = props.getProperty("INTERVALOS");
-  if (guardado) { try { return JSON.parse(guardado); } catch(e) {} }
-  return [30, 14, 7, 3, 2]; // mismo default que SpacedRepetition.gs
+// ============================================================
+// Comando /modo — a qué hoja va el texto libre (VHS_INPUT/VHS_OUTPUT)
+// ============================================================
+
+const PROP_MODO_PALABRA = "MODO_PALABRA";
+const HOJA_VHS_INPUT    = "VHS_INPUT";
+const HOJA_VHS_OUTPUT   = "VHS_OUTPUT";
+const COL_B_PALABRA     = 2;
+
+function obtenerModoPalabra() {
+  const props = PropertiesService.getScriptProperties();
+  return props.getProperty(PROP_MODO_PALABRA) || "input";
+}
+
+function manejarModo(chatId, texto) {
+  const arg = texto.replace(/^\/modo\s*/i, "").trim().toLowerCase();
+
+  if (!arg) {
+    responderTelegram(chatId,
+      `🔧 Modo actual: <b>${obtenerModoPalabra().toUpperCase()}</b>\n\n` +
+      `Para cambiar: <code>/modo input</code> o <code>/modo output</code>`
+    );
+    return;
+  }
+
+  if (!["input", "output"].includes(arg)) {
+    responderTelegram(chatId, "⚠️ Modo inválido. Usá <code>/modo input</code> o <code>/modo output</code>");
+    return;
+  }
+
+  PropertiesService.getScriptProperties().setProperty(PROP_MODO_PALABRA, arg);
+  responderTelegram(chatId, `✅ Modo cambiado a <b>${arg.toUpperCase()}</b>. El texto libre ahora se guarda en <b>${arg === "input" ? HOJA_VHS_INPUT : HOJA_VHS_OUTPUT}</b>.`);
+}
+
+// ------------------------------------------------------------
+// Guarda una palabra suelta en columna B de VHS_INPUT/VHS_OUTPUT.
+// La hoja tiene huecos reales en columna B (no es continua), así que
+// buscar la primera B vacía desde arriba encuentra huecos viejos en
+// medio de los datos (ej. B15) en vez del final real de la data.
+// En cambio: la fila de destino es la siguiente a la última fila
+// que tenga contenido en B, E, I o L (columnas con datos reales
+// esparcidos — ver categorías "Alle die Worter"/"Wichtigste"/
+// "Erinner Mall"/"verinerliche!").
+//
+// Optimización: en vez de escanear desde la fila 1 cada vez, se
+// cachea en PropertiesService la última fila usada por hoja
+// (PUNTERO_FILA_<nombre>) y se arranca la búsqueda desde ahí. Solo
+// se recorre hacia adelante desde el puntero, no toda la hoja.
+// ------------------------------------------------------------
+const COLS_DATO_PALABRA = [2, 5, 9, 12]; // B, E, I, L
+
+function guardarPalabraSuelta(texto) {
+  try {
+    const modo   = obtenerModoPalabra();
+    const nombre = modo === "output" ? HOJA_VHS_OUTPUT : HOJA_VHS_INPUT;
+
+    const ss   = SpreadsheetApp.openById(ID_HOJA_F);
+    const hoja = ss.getSheetByName(nombre);
+    if (!hoja) throw new Error(`No existe la hoja ${nombre}.`);
+
+    const props      = PropertiesService.getScriptProperties();
+    const propPuntero = `PUNTERO_FILA_${nombre}`;
+    const maxRows     = hoja.getMaxRows();
+    const desde        = parseInt(props.getProperty(propPuntero) || "1");
+
+    const filasARevisar = maxRows - desde + 1;
+    let ultimaFilaConDato = desde > 1 ? desde - 1 : 1; // fila 1 = header
+
+    if (filasARevisar > 0) {
+      for (const col of COLS_DATO_PALABRA) {
+        const valores = hoja.getRange(desde, col, filasARevisar, 1).getValues();
+        for (let i = valores.length - 1; i >= 0; i--) {
+          if (valores[i][0].toString().trim()) {
+            const filaAbs = desde + i;
+            if (filaAbs > ultimaFilaConDato) ultimaFilaConDato = filaAbs;
+            break;
+          }
+        }
+      }
+    }
+
+    const fila = ultimaFilaConDato + 1;
+    hoja.getRange(fila, COL_B_PALABRA).setValue(texto);
+    props.setProperty(propPuntero, String(fila));
+    return { ok: true, hoja: nombre, fila };
+  } catch(err) {
+    return { ok: false, mensaje: err.message };
+  }
 }
 
 // ============================================================
@@ -272,11 +346,7 @@ function guardarPalabras(datos) {
       if (f && f.getTime() === target.getTime()) { fila = i+1; break; }
     }
 
-    // Acepta datos.palabras (array, 1-3 elementos, usado por /nueva) o
-    // datos.palabra1/2/3 (usado por el formulario web, paginaHTML).
-    const words = datos.palabras
-      ? datos.palabras.map(w => w.trim())
-      : [datos.palabra1, datos.palabra2, datos.palabra3].filter(w => w).map(w => w.trim());
+    const words = datos.palabras.map(w => w.trim());
 
     if (fila === -1) {
       const nueva = hoja.getLastRow() + 1;
@@ -337,101 +407,4 @@ function verWebhookInfo() {
   const token = PropertiesService.getScriptProperties().getProperty("TELEGRAM_TOKEN");
   const resp = UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
   Logger.log(resp.getContentText());
-}
-
-// ============================================================
-// Formulario HTML
-// ============================================================
-
-function paginaHTML() {
-  const hoy = Utilities.formatDate(new Date(), ZONA_HOR_F, "dd/MM/yyyy");
-  return `<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Wörter des Tages</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f0f7; min-height: 100vh; padding: 0 0 40px; }
-    .header { background: linear-gradient(135deg, #4f46e5, #7c3aed); padding: 28px 20px 24px; text-align: center; color: white; }
-    .header h1 { font-size: 22px; font-weight: 700; margin-top: 6px; }
-    .header p  { font-size: 13px; opacity: 0.8; margin-top: 4px; }
-    .card { background: white; border-radius: 14px; margin: 20px 16px 0; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-    .section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: #888; margin-bottom: 12px; }
-    label { display: block; font-size: 13px; font-weight: 600; color: #444; margin-bottom: 5px; margin-top: 14px; }
-    label:first-of-type { margin-top: 0; }
-    input[type="text"] { width: 100%; padding: 12px 14px; border: 1.5px solid #e0e0e8; border-radius: 10px; font-size: 16px; color: #1a1a2e; outline: none; transition: border-color 0.2s; background: #fafafa; }
-    input:focus { border-color: #4f46e5; background: white; }
-    .idioma-group { display: flex; gap: 10px; margin-top: 4px; }
-    .idioma-btn { flex: 1; padding: 12px; border: 2px solid #e0e0e8; border-radius: 10px; background: white; font-size: 15px; font-weight: 600; color: #666; cursor: pointer; text-align: center; transition: all 0.15s; }
-    .idioma-btn.selected { border-color: #4f46e5; background: #f0f0ff; color: #4f46e5; }
-    .btn-submit { width: calc(100% - 32px); margin: 20px 16px 0; padding: 16px; background: linear-gradient(135deg, #4f46e5, #7c3aed); color: white; border: none; border-radius: 14px; font-size: 17px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 12px rgba(79,70,229,0.35); }
-    .btn-submit:disabled { opacity: 0.6; cursor: not-allowed; }
-    .toast { display: none; margin: 16px 16px 0; padding: 14px 18px; border-radius: 12px; font-size: 14px; font-weight: 600; text-align: center; }
-    .toast.ok    { background: #d1fae5; color: #065f46; display: block; }
-    .toast.error { background: #fee2e2; color: #991b1b; display: block; }
-    .spinner { display: none; text-align: center; padding: 10px; color: #888; font-size: 14px; }
-  </style>
-</head>
-<body>
-  <div class="header"><div style="font-size:32px;">🇩🇪</div><h1>Wörter des Tages</h1><p>Ingresá las palabras del día</p></div>
-  <div class="card">
-    <div class="section-title">📅 Fecha</div>
-    <label for="fecha">DD/MM/YYYY</label>
-    <input type="text" id="fecha" placeholder="ej: 25/06/2026" value="${hoy}" maxlength="10">
-  </div>
-  <div class="card">
-    <div class="section-title">📝 Palabras</div>
-    <label for="p1">Palabra 1 (col C)</label>
-    <input type="text" id="p1" placeholder="ej: absolvieren" autocomplete="off">
-    <label for="p2">Palabra 2 (col D)</label>
-    <input type="text" id="p2" placeholder="ej: hingehen" autocomplete="off">
-    <label for="p3">Palabra 3 (col E)</label>
-    <input type="text" id="p3" placeholder="ej: ertragen" autocomplete="off">
-  </div>
-  <div class="card">
-    <div class="section-title">🌐 Idioma (col F)</div>
-    <div class="idioma-group">
-      <div class="idioma-btn selected" id="btn-de" onclick="seleccionarIdioma('de')">🇩🇪 Alemán</div>
-      <div class="idioma-btn" id="btn-en" onclick="seleccionarIdioma('en')">🇬🇧 Inglés</div>
-    </div>
-  </div>
-  <div class="toast" id="toast"></div>
-  <div class="spinner" id="spinner">Guardando... ⏳</div>
-  <button class="btn-submit" id="btnGuardar" onclick="guardar()">Guardar palabras</button>
-<script>
-  let idiomaSeleccionado = 'de';
-  function seleccionarIdioma(i) {
-    idiomaSeleccionado = i;
-    document.getElementById('btn-de').classList.toggle('selected', i==='de');
-    document.getElementById('btn-en').classList.toggle('selected', i==='en');
-  }
-  function mostrarToast(msg, tipo) {
-    const t = document.getElementById('toast');
-    t.textContent = msg; t.className = 'toast ' + tipo;
-    t.scrollIntoView({ behavior: 'smooth' });
-  }
-  function guardar() {
-    const fecha=document.getElementById('fecha').value.trim();
-    const p1=document.getElementById('p1').value.trim();
-    const p2=document.getElementById('p2').value.trim();
-    const p3=document.getElementById('p3').value.trim();
-    if (!fecha.match(/^\\d{2}\\/\\d{2}\\/\\d{4}$/)) { mostrarToast('⚠️ Fecha: DD/MM/YYYY','error'); return; }
-    if (!p1||!p2||!p3) { mostrarToast('⚠️ Completá las 3 palabras.','error'); return; }
-    const btn=document.getElementById('btnGuardar'); btn.disabled=true;
-    document.getElementById('spinner').style.display='block';
-    document.getElementById('toast').className='toast';
-    google.script.run
-      .withSuccessHandler(function(res){
-        document.getElementById('spinner').style.display='none'; btn.disabled=false;
-        if(res.ok){ mostrarToast(res.mensaje,'ok'); document.getElementById('p1').value=''; document.getElementById('p2').value=''; document.getElementById('p3').value=''; }
-        else mostrarToast(res.mensaje,'error');
-      })
-      .withFailureHandler(function(err){ document.getElementById('spinner').style.display='none'; btn.disabled=false; mostrarToast('❌ '+err.message,'error'); })
-      .guardarPalabras({fecha,palabra1:p1,palabra2:p2,palabra3:p3,idioma:idiomaSeleccionado});
-  }
-</script>
-</body>
-</html>`;
 }

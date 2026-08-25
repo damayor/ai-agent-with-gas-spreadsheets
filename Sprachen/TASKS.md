@@ -70,14 +70,27 @@ fusionar el trigger con `procesarInbox()` en un `tick()` único.
 Antes de implementar, varios puntos necesitan aclaración de David — ver
 notas debajo de cada uno. No arrancar código hasta resolver esas dudas.
 
-- [ ] **1. Palabra nueva del día va a C/D/E, no a columna R.** Cuando
-      llega una palabra suelta (texto libre, hoy via `guardarEnInbox`
-      → Inbox → columnas R/S), en vez de eso debe escribirse
-      directamente en la fila de la fecha de HOY, en la primera
-      columna vacía entre C, D, E de `WoerterDesTages`. Si las tres
-      están ocupadas, ver punto 5 (desborda a columna P).
-      Reemplaza/reemplaza el flujo de Inbox para texto libre — ver
-      también punto 6a (¿sigue haciendo falta la hoja Inbox?).
+- [x] **1. Palabra nueva del día va a `VHS_INPUT` o `VHS_OUTPUT`, no a
+      columna R.** Reemplazado: en vez del flujo Inbox (texto libre →
+      `guardarEnInbox` → columnas R/S), el texto libre ahora se
+      escribe directo en columna B de `VHS_INPUT` (si la palabra es en
+      alemán) o `VHS_OUTPUT` (si es en español), en la próxima fila
+      vacía de esa columna B (no `getLastRow()` de toda la hoja —
+      hay fórmulas arrastradas más abajo en C/F/J que la inflarían).
+      **Modo activo** (INPUT u OUTPUT) se guarda en
+      `PropertiesService` vía comando `/modo input` / `/modo output`
+      (sin argumento muestra el modo actual); persiste entre mensajes
+      hasta el próximo cambio. Implementado en
+      [Form.gs](Form.gs): `manejarModo`, `obtenerModoPalabra`,
+      `guardarPalabraSuelta`, enganchado en `procesarUpdateTelegram`.
+      **Descartado por ahora**: el caso TAGESWORT (escribir en C/D/E
+      de `WoerterDesTages`) que estaba documentado antes acá — no se
+      implementa por el momento, queda como posible tercer modo futuro.
+      Ver también punto 6a (¿sigue haciendo falta la hoja Inbox y
+      `guardarEnInbox`, ahora que el texto libre no pasa por ahí?).
+      **Pendiente**: pegar este cambio en el editor de Apps Script y
+      probar `/modo`, `/modo input`, `/modo output` y un texto libre
+      en cada modo end-to-end.
 - [ ] **2. Comando `translate`: dado fecha + palabra (o solo palabra),
       devolver su traducción según el mapeo C→G, D→H, E→I** (columna
       de palabra → columna de traducción español correspondiente en
@@ -85,51 +98,33 @@ notas debajo de cada uno. No arrancar código hasta resolver esas dudas.
       (`/translate`?) y formato de argumentos (`/translate DD/MM,
       palabra`? ¿o busca la palabra en cualquier fecha si no se da
       fecha?).
-- [ ] **3. Colorear celda según emoji-reacción recibido en los
-      recordatorios de repaso espaciado.** Confirmado con captura: son
-      reacciones NATIVAS de Telegram (❤️/👍/👎/🤔 aparecen como ícono
-      chico debajo del mensaje del bot), no texto escrito por el
-      usuario, y aplican sobre los mensajes que manda
-      `enviarRecordatorioHoy()` en
-      [SpacedRepetition.gs](SpacedRepetition.gs) — no sobre `/ver` ni
-      `/hoy` (esos siguen como están).
-      **Mapeo de colores**: ❤️ o 👍 → verde `#00ff00` de background;
-      👎 o 🤔 → naranja.
-      **Mecanismo definido**:
-      1. `enviarRecordatorioHoy()` ya arma `obtenerPalabras()` con un
-         array de objetos `{orig, spoiler, fecha}` por cada C/D/E no
-         vacía — hay que sumarles `fila` y `col` (índice de columna,
-         3/4/5) al armar `pares` dentro de `obtenerPalabras`
-         ([SpacedRepetition.gs:141-145](SpacedRepetition.gs#L141-L145)),
-         ya que hoy no se trackea la celda de origen, solo el valor.
-      2. Al mandar cada mensaje de palabra (bucle
-         `for (const p of todas)`,
-         [SpacedRepetition.gs:194-198](SpacedRepetition.gs#L194-L198)),
-         `enviarTelegram` debe devolver el `message_id` de la
-         respuesta de `sendMessage` (hoy no lo hace, solo devuelve
-         `true`/`false`) — hay que capturarlo.
-      3. Guardar en `PropertiesService` (o una hoja aparte si crece
-         mucho) el mapeo `message_id → {fila, col}`, con TTL de 7
-         días (ver definición más abajo) para no acumular basura.
-      4. `pollTelegram()` en [Polling.gs](Polling.gs) hoy solo procesa
-         `update.message`/`update.edited_message`. Hay que sumar el
-         manejo de `update.message_reaction`: leer
-         `message_reaction.message_id` y
-         `message_reaction.new_reaction` (array de emojis actuales
-         tras el cambio), buscar la celda mapeada, y pintar el
-         background según el emoji.
-      5. **Requisito de Telegram**: el bot necesita tener habilitado
-         recibir `message_reaction` — hay que sumarlo a
-         `allowed_updates` (Telegram por default NO manda
-         `message_reaction` a menos que se pida explícitamente al
-         hacer polling/webhook). Revisar si `getUpdates` necesita el
-         parámetro `allowed_updates` en la URL de
-         `pollTelegram()`.
-      **TTL definido: 7 días** — entradas del mapeo con más de 7 días
-      se descartan/ignoran (limpiar al escribir nuevas, o chequear
-      antigüedad al leer). Si llega una reacción para un `message_id`
-      que ya no está en el mapeo (vencido o nunca se guardó), se
-      ignora silenciosamente.
+- [x] **3. Colorear celda según emoji-reacción recibido en los
+      recordatorios de repaso espaciado.** Implementado en
+      [Polling.gs](Polling.gs) (`procesarReaccionTelegram`,
+      `responderTraduccion`) y [SpacedRepetition.gs](SpacedRepetition.gs)
+      (`obtenerPalabras` ahora trackea `fila`/`col`, `enviarTelegram`
+      devuelve `message_id`, `guardarMapeoReaccion`/
+      `obtenerMapeoReaccion` con TTL 7 días en `PropertiesService`).
+      Reacciones nativas de Telegram sobre los mensajes de
+      `enviarRecordatorioHoy()` (no aplica a `/ver` ni `/hoy`).
+      **Mapeo final** (Wort = C/D/E, Satz = K/L/M):
+      - ❤️ → sabía la palabra de memoria: Wort **y** Satz verde
+        `#d9ead3`.
+      - 👍 / 👌 → se acordó leyendo la frase: Wort amarillo
+        `#fff2cc`, Satz verde `#d9ead3`.
+      - 👎 / 🤔 → no la entendió ni con contexto: Wort **y** Satz
+        amarillo `#fff2cc` + responde por Telegram con la traducción
+        española (columna G/H/I según C/D/E).
+      `allowed_updates` en `pollTelegram()` ahora incluye
+      `message_reaction` (Telegram no lo manda por default).
+      **Pendiente**: pegar el código actualizado en el editor de Apps
+      Script y probar los 5 emojis (❤️ 👍 👌 👎 🤔) end-to-end.
+      **Sin implementar todavía** (idea de David, queda para después):
+      función que revise, para cada palabra, si hace un mes (mismo
+      día) hay una celda verde — si la hay, la palabra sigue
+      "aprendida" y no hace falta re-testear; si no, incluirla en el
+      próximo repaso. Sirve para desactivar palabras ya aprendidas y
+      enfocar los tests en las amarillas.
 - [ ] **4. Nuevo comando `/erinner`**: igual a `/nueva` pero solo
       escribe en columna E — busca la fila de la fecha dada, o si esa
       E ya está ocupada, sigue buscando hacia ARRIBA (fechas
@@ -153,23 +148,31 @@ notas debajo de cada uno. No arrancar código hasta resolver esas dudas.
       (¿cachear un puntero en PropertiesService como
       `PUNTERO_FILA_R`, o escanear hacia abajo desde una fila
       conocida cada vez?).
-- [ ] **6. Reestructuración de arquitectura**:
-  - [ ] **a. ¿Sigue haciendo falta la hoja "Inbox"?** Si el punto 1
-        reemplaza el flujo Inbox→R/S por escritura directa a C/D/E,
-        evaluar borrar `guardarEnInbox`, `crearHojaInbox`,
-        `probarInboxManual`, `procesarInbox`, `obtenerProximaFilaR`,
-        y la llamada a `procesarInbox()` dentro de `tick()`
-        ([Inboxdiccionario.gs](Inboxdiccionario.gs),
-        [Polling.gs](Polling.gs)). Ojo: `manejarDictionary` también
-        lee columnas R/S — ver si `/dictionary` sigue teniendo sentido
-        tal cual o cambia de fuente de datos.
-  - [ ] **b. ¿Sigue haciendo falta el formulario HTML (`doGet` +
-        `paginaHTML`)?** Si ya no se usa, borrar `doGet`,
-        `paginaHTML()` completa (bloque grande de HTML/CSS/JS
-        inline), y evaluar si `guardarPalabras`/`manejarNueva` pueden
-        simplificarse al no tener que soportar el formato
-        `palabra1/2/3` del formulario (dejar solo el array
-        `datos.palabras` usado por `/nueva`).
+- [x] **6. Reestructuración de arquitectura**:
+  - [x] **a. ¿Sigue haciendo falta la hoja "Inbox"?** Confirmado que
+        no — el punto 1 reemplazó el flujo Inbox→R/S por escritura
+        directa a columna B (VHS_INPUT/VHS_OUTPUT). Borrado
+        [Inboxdiccionario.gs](Inboxdiccionario.gs) completo
+        (`guardarEnInbox`, `crearHojaInbox`, `probarInboxManual`,
+        `procesarInbox`, `obtenerProximaFilaR`). Sacada la llamada a
+        `procesarInbox()` de `tick()` en [Polling.gs](Polling.gs) —
+        ahora solo llama a `pollTelegram()`. También borrado
+        `manejarDictionary` (comando `/dictionary`) de
+        [Form.gs](Form.gs), ya que leía las columnas R/S que ya no se
+        llenan. **Pendiente**: pegar estos cambios en el editor de
+        Apps Script (borrar el archivo Inboxdiccionario.gs ahí
+        también) y confirmar que no queda ningún trigger viejo
+        apuntando a `procesarInbox`.
+  - [x] **b. ¿Sigue haciendo falta el formulario HTML (`doGet` +
+        `paginaHTML`)?** Ya eliminado por David directamente en el
+        editor de Apps Script.
+- [x] **7. Recordatorio diario para agregar palabras nuevas.**
+      Implementado en [SpacedRepetition.gs](SpacedRepetition.gs):
+      `enviarRecordatorioAgregarPalabras()` manda por Telegram el
+      formato de `/nueva` (con ejemplo); `crearTriggerRecordatorioPalabras()`
+      instala un trigger diario a las 23:30 (`Europe/Berlin`).
+      **Pendiente**: pegar en el editor de Apps Script y correr
+      `crearTriggerRecordatorioPalabras()` una vez a mano.
   - [ ] **c. Unificar archivos .gs.** Hoy son 6:
         [Form.gs](Form.gs), [Inboxdiccionario.gs](Inboxdiccionario.gs),
         [SpacedRepetition.gs](SpacedRepetition.gs),

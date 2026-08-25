@@ -12,7 +12,8 @@ const ZONA_HORARIA  = "Europe/Berlin";
 // INTERVALOS — se puede sobreescribir desde Telegram con /intervalos
 // Si hay un valor guardado en PropertiesService, ese tiene prioridad.
 // Para resetear al valor de acá, usá /intervalos reset desde Telegram.
-const INTERVALOS_DEFAULT = [30, 120, 90, 14, 7, 5, 2];
+const INTERVALOS_DEFAULT = [2, 5, 7, 14, 30, 120, 90];
+const HORAS_TRIGGER_REPASO = [9, 11, 13, 15, 17, 19, 21];
 
 // ============================================================
 // NO es necesario tocar nada debajo de esta línea
@@ -111,8 +112,35 @@ function enviarTelegram(mensaje) {
     });
     const res = JSON.parse(resp.getContentText());
     if (!res.ok) { Logger.log("❌ Telegram: " + JSON.stringify(res)); return false; }
-    return true;
+    return res.result.message_id;
   } catch(e) { Logger.log("❌ " + e.message); return false; }
+}
+
+// --- Mapeo message_id → celda (para reacciones de Telegram) --
+
+const TTL_MAPEO_REACCION_MS = 7 * 24 * 60 * 60 * 1000; // 7 días
+
+function guardarMapeoReaccion(messageId, fila, col, orig) {
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty(`react_${messageId}`, JSON.stringify({
+    fila, col, orig, ts: Date.now(),
+  }));
+}
+
+function obtenerMapeoReaccion(messageId) {
+  const props = PropertiesService.getScriptProperties();
+  const clave = `react_${messageId}`;
+  const guardado = props.getProperty(clave);
+  if (!guardado) return null;
+
+  let datos;
+  try { datos = JSON.parse(guardado); } catch(e) { props.deleteProperty(clave); return null; }
+
+  if (Date.now() - datos.ts > TTL_MAPEO_REACCION_MS) {
+    props.deleteProperty(clave);
+    return null;
+  }
+  return datos;
 }
 
 // --- Lógica principal ----------------------------------------
@@ -139,9 +167,9 @@ function obtenerPalabras(fechaRef, dias) {
     const esIngles = (fila[5]||"").toString().trim().toLowerCase() === "en";
 
     const pares = [
-      { orig: fila[2], trad: fila[6],  frase: fila[10] },
-      { orig: fila[3], trad: fila[7],  frase: fila[11] },
-      { orig: fila[4], trad: fila[8],  frase: fila[12] },
+      { orig: fila[2], trad: fila[6],  frase: fila[10], col: 3 },
+      { orig: fila[3], trad: fila[7],  frase: fila[11], col: 4 },
+      { orig: fila[4], trad: fila[8],  frase: fila[12], col: 5 },
     ];
 
     for (const par of pares) {
@@ -152,7 +180,9 @@ function obtenerPalabras(fechaRef, dias) {
       if (!trad || trad === "-" || trad === "–") continue;
 
       const spoiler = tieneFrase(frase) ? frase : trad;
-      (esIngles ? palabrasEN : palabrasDE).push({ orig, spoiler, fecha: fechaAnotacion });
+      (esIngles ? palabrasEN : palabrasDE).push({
+        orig, spoiler, fecha: fechaAnotacion, fila: i + 1, col: par.col,
+      });
     }
   }
 
@@ -192,12 +222,70 @@ function enviarRecordatorioHoy() {
 
   // Mensajes 2, 3, 4 — una palabra por mensaje
   for (const p of todas) {
-    enviarTelegram(
+    const messageId = enviarTelegram(
       `${p.bandera} <b>${p.orig}</b>\n<tg-spoiler>${p.spoiler}</tg-spoiler>`
     );
+    if (messageId) guardarMapeoReaccion(messageId, p.fila, p.col, p.orig);
   }
 
   Logger.log(`Enviados: 1 header + ${todas.length} palabras (+${dias}d)`);
+}
+
+// --- Triggers de repaso — uno por cada posición de INTERVALOS -
+
+// Horas de disparo (una por intervalo, en orden). enviarRecordatorioHoy()
+// sigue usando su contador secuencial de disparos del día
+// (obtenerIndiceDeHoy) para saber qué posición de INTERVALOS le toca —
+// estos triggers solo fijan A QUÉ HORA se dispara cada llamada.
+
+function crearTriggersRepaso() {
+  const existentes = ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === "enviarRecordatorioHoy");
+
+  if (existentes.length > 0) {
+    Logger.log(`Ya existen ${existentes.length} trigger(s) de enviarRecordatorioHoy, no se crean más. Borralos a mano si querés recrearlos.`);
+    return;
+  }
+
+  HORAS_TRIGGER_REPASO.forEach(hora => {
+    ScriptApp.newTrigger("enviarRecordatorioHoy")
+      .timeBased()
+      .atHour(hora)
+      .nearMinute(23)
+      .everyDays(1)
+      .inTimezone(ZONA_HORARIA)
+      .create();
+  });
+
+  Logger.log(`Triggers creados: ${HORAS_TRIGGER_REPASO.length} disparos de enviarRecordatorioHoy a las horas ${HORAS_TRIGGER_REPASO.join(", ")}.`);
+}
+
+// --- Recordatorio diario para agregar palabras nuevas ---------
+
+function enviarRecordatorioAgregarPalabras() {
+  enviarTelegram(
+    `📝 <b>¿Palabras nuevas hoy?</b>\n` +
+    `Mandalas con:\n<code>/nueva DD/MM, idioma, p1, p2, p3</code>\n` +
+    `Ejemplo:\n<code>/nueva 25/06, de, absolvieren, hingehen, ertragen</code>`
+  );
+}
+
+function crearTriggerRecordatorioPalabras() {
+  const yaExiste = ScriptApp.getProjectTriggers()
+    .some(t => t.getHandlerFunction() === "enviarRecordatorioAgregarPalabras");
+
+  if (yaExiste) {
+    Logger.log("El trigger de recordatorio de palabras ya existe, no se crea otro.");
+    return;
+  }
+  ScriptApp.newTrigger("enviarRecordatorioAgregarPalabras")
+    .timeBased()
+    .atHour(23)
+    .nearMinute(30)
+    .everyDays(1)
+    .inTimezone(ZONA_HORARIA)
+    .create();
+  Logger.log("Trigger creado: recordatorio de palabras nuevas a las 23:30.");
 }
 
 // --- Pruebas -------------------------------------------------
