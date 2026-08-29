@@ -86,3 +86,21 @@ function crearTriggerTick() {
     .create();
   Logger.log("Trigger creado: tick cada 1 minuto (pollTelegram).");
 }
+
+// ------------------------------------------------------------
+// tickHorasLaboralesFila52() — wrapper para el trigger de tiempo que
+// recalcula la fila 52. A diferencia de onEdit (que corre en modo
+// restringido y solo puede usar la hoja activa), un trigger de tiempo
+// no tiene hoja activa y sí tiene permiso para openById — por eso
+// resuelve la hoja acá y se la pasa a actualizarHorasLaboralesFila52
+// (ver Codigo.gs).
+//
+// IMPORTANTE: el trigger instalado en Apps Script (Activadores) debe
+// apuntar a esta función, "tickHorasLaboralesFila52", y NO directo a
+// "actualizarHorasLaboralesFila52" (eso causaba el error de permisos
+// "openById" / la excepción de getActiveSheet() sin UI).
+// ------------------------------------------------------------
+function tickHorasLaboralesFila52() {
+  const hoja = SpreadsheetApp.openById(SPREADSHEET_ID).getSheets()[0];
+  actualizarHorasLaboralesFila52(hoja);
+}

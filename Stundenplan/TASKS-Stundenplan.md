@@ -164,3 +164,11 @@ polling (ver [context.md](context.md) para el detalle completo de la migración)
         `esMedioBloque = true` y antepone `" END"` al tag en la celda — resultado ej.
         `"Freelancer END /2 :45"`.
       - `HORAS_LABORALES` no requirió cambios — ya lee `/2` por substring (ticket 8).
+
+## Nuevas Tasks
+
+  cambia el formato de escritura
+
+  una que permita escribir en la celda anterior, algo asi como end, y si son :05 escriba antes...
+
+  los pinches colores vinotinto si borro algo pues eghh quitelos.

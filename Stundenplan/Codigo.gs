@@ -132,13 +132,21 @@ function onEdit(e) {
 // toca) — ya no vive como fórmula de celda (=HORAS_LABORALES(...)),
 // porque Sheets la recalculaba como función personalizada en cada
 // refresco/tick, cientos de veces por minuto (ver Ausführungen/
-// Executions). Se recalcula solo acá, al marcar el checkbox N13.
-function actualizarHorasLaboralesFila52() {
-  const hoja = SpreadsheetApp.getActiveSheet();
+// Executions). Se recalcula al marcar el checkbox N13, y también vía
+// trigger de tiempo instalado a mano (ver crearTriggerHorasLaboralesFila52
+// en Polling.gs).
+//
+// hojaParam: onEdit simple corre en modo restringido y NO tiene permiso
+// para SpreadsheetApp.openById (solo puede tocar la hoja activa); el
+// trigger de tiempo, en cambio, no tiene hoja "activa" y sí necesita
+// openById. Cada caller resuelve la hoja en el contexto donde tiene
+// permiso y la pasa acá — ver onEdit() y tickHorasLaboralesFila52().
+function actualizarHorasLaboralesFila52(hojaParam) {
+  const hoja = hojaParam || SpreadsheetApp.getActiveSheet();
   const valores = [];
 
   for (let i = 0; i < 7; i++) {
-    valores.push(HORAS_LABORALES(i + 3, 2, 49));
+    valores.push(HORAS_LABORALES(hoja, i + 3, 2, 49));
   }
 
   hoja.getRange(52, 3, 1, 7).setValues([valores]); // fila 52, col 3 (C) a 9 (I)
@@ -178,16 +186,10 @@ function cleanEmptyCells() {
     if (rango.getValue() === "") {
         rango.setBackground("#ffffff"); // Set to white when empty
     }
-    
-
-  
 }
 
-
 //col starts en 1, no en 0
-function HORAS_LABORALES(columna, filaInicio, filaFin) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const activeSheet = ss.getActiveSheet();
+function HORAS_LABORALES(activeSheet, columna, filaInicio, filaFin) {
   var targetColors = activeSheet.getRange(`L22:L31`).getBackgrounds().flat();
   var arbeitColors = activeSheet.getRange(`L39`).getBackgrounds().flat();
 
@@ -219,46 +221,6 @@ function HORAS_LABORALES(columna, filaInicio, filaFin) {
   return horas;
 }
 
-function HORAS_LAB_DISPONIBLES(columna, filaInicio, filaFin) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const activeSheet = ss.getActiveSheet();
-  var targetColor = "#990000"
-  const range = activeSheet.getRange(filaInicio, columna, filaFin - filaInicio + 1, 1);
-  const backgrounds = range.getBackgrounds().flat();
-  const fontLines = range.getFontLines().flat();
-
-  let totalHoras = 0;
-
-  for (let i = 0; i < backgrounds.length; i++) {
-    const color = backgrounds[i];
-    
-    if (targetColor ==  color.toLowerCase() ) {
-      totalHoras++;
-    }
-
-  }
-  
-  console.log(activeSheet.getName() + "Horas de la col ", columna, ": ", totalHoras * 0.5);
-  return totalHoras * 0.5;
-}
-
-/**
- * Devuelve si cumpliste las 8h laborales del día.
- * Uso: =CUMPLE_8H("C2:C100")
- * Devuelve: "✅ 9.5h / 8h" o "❌ 6h / 8h"
- *  =HORAS_LABORALES("B2:B50")        → número total de horas laborales del día
-    =CUMPLE_8H("B2:B50")              → "✅ 8.5h / 8h"  o  "❌ 6h / 8h"
-    =CUMPLE_8H("B2:B50", 6) 
- */
-function CUMPLE_8H(sumRangeA1, metaHoras = 8) {
-  const horas = HORAS_LABORALES(sumRangeA1);
-  const cumple = horas >= metaHoras;
-  return `${cumple ? "✅" : "❌"} ${horas}h / ${metaHoras}h`;
-}
-
-
-
-
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('📅 Calendario Semanal')
@@ -271,15 +233,11 @@ function onOpen() {
 }
 
 function test() {
-  
-  
-    for (let i = 0; i < 7  ; i++) {
-     HORAS_LABORALES(i+3, 2, 49 ); 
-    }
-    rango.setValue(false); // Reinicia el "botón"
-  
-  //actualizarHorasPorActividad()
+  const hoja = SpreadsheetApp.getActiveSheet();
 
+  for (let i = 0; i < 7; i++) {
+    HORAS_LABORALES(hoja, i + 3, 2, 49);
+  }
 }
 
 function distribuirProyectos() {
