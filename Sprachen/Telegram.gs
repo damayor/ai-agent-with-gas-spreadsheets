@@ -1,5 +1,5 @@
 // ============================================================
-// WOERTER DES TAGES — Telegram Webhook (histórico) + comandos
+// TELEGRAM — comandos, polling y ruteo del bot Wörter des Tages
 // ============================================================
 // Comandos Telegram:
 //   /nueva DD/MM, idioma, p1, p2, p3   (1 a 3 palabras, sin año)
@@ -7,35 +7,26 @@
 //   /hoy
 //   /intervalos 30 14 7 3 2
 //   /intervalos reset
-//   (texto libre, sin "/")  -> se guarda como palabra suelta en col. R
+//   /modo input | output
+//   (texto libre, sin "/")  -> se guarda como palabra suelta en
+//   VHS_INPUT/VHS_OUTPUT según el modo activo.
+//
+// Mecanismo de entrada vigente: pollTelegram() (más abajo), llamado
+// por tick() cada 1 minuto. El viejo webhook (doPost) sufría un 302
+// intermitente propio de GAS Web App respondiendo a callers no
+// autenticados -> Telegram no seguía el redirect y los mensajes se
+// acumulaban en pending_update_count. Detalle completo en context.md.
+// Solución: Apps Script inicia la llamada hacia Telegram (getUpdates,
+// autenticada con el bot token) en vez de esperar que Telegram le
+// pegue a /exec.
 // ============================================================
 
-const ID_HOJA_F    = "1yYJzqZmJOvM6lMMXLdf_ZWMEaa0_vvDWDeu87T2sm38";
-const NOMBRE_TAB_F = "WoerterDesTages";
-const ZONA_HOR_F   = "Europe/Berlin";
+const ID_HOJA      = "1yYJzqZmJOvM6lMMXLdf_ZWMEaa0_vvDWDeu87T2sm38";
+const NOMBRE_TAB   = "WoerterDesTages";
+const ZONA_HORARIA = "Europe/Berlin";
 
 // ============================================================
-// doPost — Webhook Telegram
-// ============================================================
-
-// NOTA (migración a polling): doPost queda sin usar una vez corrido
-// eliminarWebhook() — se deja como referencia histórica / por si algún
-// día se quiere reactivar el webhook. El mecanismo vigente es
-// pollTelegram() (ver Polling.gs), que llama a procesarUpdateTelegram
-// por cada update nuevo.
-function doPost(e) {
-  try {
-    const update = JSON.parse(e.postData.contents);
-    procesarUpdateTelegram(update);
-  } catch(err) {
-    Logger.log("doPost error: " + err.message);
-  }
-  return okResponse();
-}
-
-// ============================================================
-// Ruteo de comandos — usado tanto por doPost (histórico) como por
-// pollTelegram (mecanismo vigente, ver Polling.gs)
+// Ruteo de comandos — llamado por pollTelegram()
 // ============================================================
 
 function procesarUpdateTelegram(update) {
@@ -80,10 +71,6 @@ function procesarUpdateTelegram(update) {
   }
 }
 
-function okResponse() {
-  return ContentService.createTextOutput("OK");
-}
-
 // ============================================================
 // Comando /intervalos
 // ============================================================
@@ -120,7 +107,7 @@ function manejarIntervalos(chatId, texto) {
     return;
   }
 
-  // Guardar en PropertiesService (compartido con SpacedRepetition.gs)
+  // Guardar en PropertiesService (compartido con Repaso.gs)
   PropertiesService.getScriptProperties().setProperty("INTERVALOS", JSON.stringify(nuevos));
 
   responderTelegram(chatId,
@@ -186,7 +173,7 @@ function guardarPalabraSuelta(texto) {
     const modo   = obtenerModoPalabra();
     const nombre = modo === "output" ? HOJA_VHS_OUTPUT : HOJA_VHS_INPUT;
 
-    const ss   = SpreadsheetApp.openById(ID_HOJA_F);
+    const ss   = SpreadsheetApp.openById(ID_HOJA);
     const hoja = ss.getSheetByName(nombre);
     if (!hoja) throw new Error(`No existe la hoja ${nombre}.`);
 
@@ -251,7 +238,7 @@ function manejarNueva(chatId, texto) {
     responderTelegram(chatId, "⚠️ Enviá entre 1 y 3 palabras."); return;
   }
 
-  const anioActual = Utilities.formatDate(new Date(), ZONA_HOR_F, "yyyy");
+  const anioActual = Utilities.formatDate(new Date(), ZONA_HORARIA, "yyyy");
   const fecha       = `${fechaCorta}/${anioActual}`;
   const datos       = { fecha, idioma, palabras };
 
@@ -293,36 +280,24 @@ function manejarVer(chatId, texto) {
 }
 
 function manejarHoy(chatId) {
-  manejarVer(chatId, "/ver " + Utilities.formatDate(new Date(), ZONA_HOR_F, "dd/MM/yyyy"));
+  manejarVer(chatId, "/ver " + Utilities.formatDate(new Date(), ZONA_HORARIA, "dd/MM/yyyy"));
 }
 
 // ============================================================
 // Helpers Sheet
 // ============================================================
 
-function parsearFechaF(celda) {
-  if (!celda) return null;
-  if (celda instanceof Date) {
-    if (isNaN(celda.getTime())) return null;
-    const d = new Date(celda); d.setHours(0,0,0,0); return d;
-  }
-  const p = celda.toString().trim().split("/");
-  if (p.length !== 3) return null;
-  const d = new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
-  d.setHours(0,0,0,0); return d;
-}
-
 function buscarFilaPorFecha(fechaStr) {
   const p = fechaStr.split("/");
   const target = new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
   target.setHours(0,0,0,0);
 
-  const ss   = SpreadsheetApp.openById(ID_HOJA_F);
-  const hoja = ss.getSheetByName(NOMBRE_TAB_F);
+  const ss   = SpreadsheetApp.openById(ID_HOJA);
+  const hoja = ss.getSheetByName(NOMBRE_TAB);
   const data = hoja.getDataRange().getValues();
 
   for (let i = 0; i < data.length; i++) {
-    const f = parsearFechaF(data[i][1]);
+    const f = parsearFecha(data[i][1]);
     if (f && f.getTime() === target.getTime()) return data[i];
   }
   return null;
@@ -336,13 +311,13 @@ function guardarPalabras(datos) {
     const target = new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
     target.setHours(0,0,0,0);
 
-    const ss   = SpreadsheetApp.openById(ID_HOJA_F);
-    const hoja = ss.getSheetByName(NOMBRE_TAB_F);
+    const ss   = SpreadsheetApp.openById(ID_HOJA);
+    const hoja = ss.getSheetByName(NOMBRE_TAB);
     const data = hoja.getDataRange().getValues();
 
     let fila = -1;
     for (let i = 0; i < data.length; i++) {
-      const f = parsearFechaF(data[i][1]);
+      const f = parsearFecha(data[i][1]);
       if (f && f.getTime() === target.getTime()) { fila = i+1; break; }
     }
 
@@ -379,18 +354,10 @@ function responderTelegram(chatId, texto) {
 }
 
 // ============================================================
-// Registrar / eliminar webhook
+// Diagnóstico webhook (el webhook en sí ya no está activo, ver
+// arriba — se usa solo para confirmar que Telegram no tiene una URL
+// registrada y que no queda cola de pending updates)
 // ============================================================
-
-function registrarWebhook() {
-  const token     = PropertiesService.getScriptProperties().getProperty("TELEGRAM_TOKEN");
-  const webAppUrl = "https://script.google.com/macros/s/AKfycbwwMFNs4yJy5K1Rai-SpaJrZ5e_A5shmgzyJDSrGrxFrlSEArPDPtH8F7fdnqDtwIVF/exec";
-  const resp = UrlFetchApp.fetch(
-    `https://api.telegram.org/bot${token}/setWebhook?url=${encodeURIComponent(webAppUrl)}`,
-    { muteHttpExceptions: true }
-  );
-  Logger.log(resp.getContentText());
-}
 
 function eliminarWebhook() {
   const token = PropertiesService.getScriptProperties().getProperty("TELEGRAM_TOKEN");
@@ -401,10 +368,164 @@ function eliminarWebhook() {
   Logger.log(resp.getContentText());
 }
 
-//Debug y ver si tiene queue
-
 function verWebhookInfo() {
   const token = PropertiesService.getScriptProperties().getProperty("TELEGRAM_TOKEN");
   const resp = UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
   Logger.log(resp.getContentText());
+}
+
+// ============================================================
+// POLLING — reemplazo del webhook de Telegram
+// ============================================================
+// Un solo trigger de 1 min (tick, abajo) llama a pollTelegram() para
+// no acumular triggers de 1 minuto innecesarios (cuota diaria de
+// ejecución de triggers en cuenta gratuita: ~90 min/día).
+//
+// IMPORTANTE: corré crearTriggerTick() UNA SOLA VEZ a mano desde el
+// editor de Apps Script para instalar el trigger.
+// ============================================================
+
+const PROP_TG_OFFSET = "TG_OFFSET";
+
+// ------------------------------------------------------------
+// Trae y procesa updates nuevos de Telegram vía getUpdates
+// ------------------------------------------------------------
+function pollTelegram() {
+  const props = PropertiesService.getScriptProperties();
+  const token = props.getProperty("TELEGRAM_TOKEN");
+  if (!token) { Logger.log("pollTelegram: falta TELEGRAM_TOKEN."); return; }
+
+  let offset = Number(props.getProperty(PROP_TG_OFFSET) || "0");
+
+  // OJO: UrlFetchApp.fetch con method "get" NO serializa `payload` como
+  // query params -> hay que armar el query string a mano en la URL.
+  // allowed_updates incluye message_reaction: por default Telegram NO
+  // manda reacciones a menos que se pidan explícitamente.
+  const allowedUpdates = encodeURIComponent(JSON.stringify(
+    ["message", "edited_message", "message_reaction"]
+  ));
+  const url = `https://api.telegram.org/bot${token}/getUpdates?offset=${offset}&timeout=0&allowed_updates=${allowedUpdates}`;
+  const resp = UrlFetchApp.fetch(url, { method: "get", muteHttpExceptions: true });
+  const data = JSON.parse(resp.getContentText());
+
+  if (!data.ok || !data.result.length) return;
+
+  data.result.forEach(function(update) {
+    try {
+      if (update.message_reaction) {
+        procesarReaccionTelegram(update.message_reaction);
+      } else {
+        procesarUpdateTelegram(update);
+      }
+      Logger.log("pollTelegram: procesado update " + update.update_id);
+    } catch(err) {
+      Logger.log("pollTelegram: error procesando update " + update.update_id + ": " + err.message);
+    }
+    offset = update.update_id + 1;
+  });
+
+  props.setProperty(PROP_TG_OFFSET, String(offset));
+}
+
+// ------------------------------------------------------------
+// Reacciones nativas de Telegram (❤️/👍/👌/👎/🤔) sobre los mensajes
+// de enviarRecordatorioHoy() (ver Repaso.gs):
+//   ❤️      -> sabía la palabra de memoria, sin leer la frase.
+//              Wort (C/D/E) Y Satz (K/L/M) verde.
+//   👍 / 👌 -> se acordó leyendo la frase.
+//              Wort amarillo, Satz verde.
+//   👎 / 🤔 -> no la entendió ni con el contexto de la frase.
+//              Wort Y Satz amarillo + responde con la traducción
+//              española (G/H/I).
+// ------------------------------------------------------------
+const VERDE_REACCION    = "#d9ead3";
+const AMARILLO_REACCION = "#fff2cc";
+
+// col (3/4/5, índice de la palabra en C/D/E) -> índice de columna de
+// la frase (K/L/M) y de la traducción española (G/H/I).
+const COL_FRASE_POR_PALABRA = { 3: 11, 4: 12, 5: 13 };
+const COL_TRAD_POR_PALABRA  = { 3: 7,  4: 8,  5: 9  };
+
+function procesarReaccionTelegram(messageReaction) {
+  const messageId = messageReaction.message_id;
+  const nuevas    = messageReaction.new_reaction || [];
+  if (!nuevas.length) return; // reacción quitada, no reacción nueva
+
+  const emoji = nuevas[0].emoji;
+  if (!emoji) return;
+
+  const mapeo = obtenerMapeoReaccion(messageId);
+  if (!mapeo) {
+    Logger.log("procesarReaccionTelegram: sin mapeo (vencido o inexistente) para message_id " + messageId);
+    return;
+  }
+
+  const ss       = SpreadsheetApp.openById(ID_HOJA);
+  const hoja     = ss.getSheetByName(NOMBRE_TAB);
+  const colFrase = COL_FRASE_POR_PALABRA[mapeo.col];
+
+  const esCorazon = emoji === "❤" || emoji === "❤️";
+  const esOk      = emoji === "👍" || emoji === "👌";
+  const esNoSabe  = emoji === "👎" || emoji === "🤔";
+
+  if (esCorazon) {
+    hoja.getRange(mapeo.fila, mapeo.col).setBackground(VERDE_REACCION);
+    hoja.getRange(mapeo.fila, colFrase).setBackground(VERDE_REACCION);
+    return;
+  }
+
+  if (esOk) {
+    hoja.getRange(mapeo.fila, mapeo.col).setBackground(AMARILLO_REACCION);
+    hoja.getRange(mapeo.fila, colFrase).setBackground(VERDE_REACCION);
+    return;
+  }
+
+  if (esNoSabe) {
+    hoja.getRange(mapeo.fila, mapeo.col).setBackground(AMARILLO_REACCION);
+    hoja.getRange(mapeo.fila, colFrase).setBackground(AMARILLO_REACCION);
+    responderTraduccion(hoja, mapeo);
+    return;
+  }
+
+  Logger.log("procesarReaccionTelegram: emoji sin mapeo de acción: " + emoji);
+}
+
+function responderTraduccion(hoja, mapeo) {
+  const colTrad = COL_TRAD_POR_PALABRA[mapeo.col];
+  const trad = hoja.getRange(mapeo.fila, colTrad).getValue().toString().trim();
+  enviarTelegram(`🇪🇸 <b>${mapeo.orig}</b> → ${trad || "(sin traducción)"}`);
+}
+
+// ------------------------------------------------------------
+// tick() — un solo trigger de 1 min que dispara polling
+// ------------------------------------------------------------
+function tick() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) {
+    Logger.log("tick: no se pudo tomar el lock, se salta esta corrida.");
+    return;
+  }
+  try {
+    pollTelegram();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ------------------------------------------------------------
+// Instalar el trigger de tiempo — CORRER UNA SOLA VEZ A MANO
+// ------------------------------------------------------------
+function crearTriggerTick() {
+  const yaExiste = ScriptApp.getProjectTriggers()
+    .some(function(t) { return t.getHandlerFunction() === "tick"; });
+
+  if (yaExiste) {
+    Logger.log("El trigger de tick ya existe, no se crea otro.");
+    return;
+  }
+  ScriptApp.newTrigger("tick")
+    .timeBased()
+    .everyMinutes(1)
+    .create();
+  Logger.log("Trigger creado: tick cada 1 minuto (pollTelegram).");
 }

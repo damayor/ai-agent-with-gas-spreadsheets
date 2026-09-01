@@ -173,20 +173,38 @@ notas debajo de cada uno. No arrancar código hasta resolver esas dudas.
       instala un trigger diario a las 23:30 (`Europe/Berlin`).
       **Pendiente**: pegar en el editor de Apps Script y correr
       `crearTriggerRecordatorioPalabras()` una vez a mano.
-  - [ ] **c. Unificar archivos .gs.** Hoy son 6:
-        [Form.gs](Form.gs), [Inboxdiccionario.gs](Inboxdiccionario.gs),
-        [SpacedRepetition.gs](SpacedRepetition.gs),
-        [PegarFrases.gs](PegarFrases.gs), [Polling.gs](Polling.gs),
-        [Codigo.gs](Codigo.gs). `Codigo.gs` (funciones de menú manual
-        para exportar CSV / detectar duplicados / copiar último mes)
-        parece un dominio aparte (mantenimiento manual de
-        `WoerteDesMonatsCSV`, no Telegram) — candidato a quedar
-        separado. El resto (Form, Inbox, Polling, SpacedRepetition,
-        PegarFrases) todo gira en torno al bot de Telegram + la hoja
-        `WoerterDesTages` — candidatos a fusionar, a definir cuántos
-        archivos finales y con qué corte (ej. uno solo `Telegram.gs` +
-        `Mantenimiento.gs`, o mantener alguna separación temática).
-        Confirmar con David el corte deseado antes de mover código.
+  - [x] **c. Unificar archivos .gs.** Reducido de 5 a 3:
+        [Telegram.gs](Telegram.gs) (fusión de Form.gs + Polling.gs —
+        comandos, ruteo, polling, reacciones), [Repaso.gs](Repaso.gs)
+        (fusión de SpacedRepetition.gs + PegarFrases.gs — repaso
+        espaciado y pegado de frases), y [Codigo.gs](Codigo.gs) sin
+        tocar (dominio aparte: mantenimiento manual de
+        `WoerteDesMonatsCSV`, no Telegram).
+        De paso, unificadas constantes duplicadas con el mismo valor
+        en los 3 archivos originales (`ID_HOJA_F`/`ID_HOJA`/
+        `ID_HOJA_PF` → `ID_HOJA` único en Telegram.gs, ídem
+        `NOMBRE_TAB`/`ZONA_HORARIA`), la función de parseo de fecha
+        duplicada (`parsearFechaF`/`parsearFecha` → una sola
+        `parsearFecha` en Repaso.gs) y las dos funciones de envío a
+        Telegram (`responderTelegram` se mantuvo para respuestas por
+        `chatId` directo desde comandos; `enviarTelegram` se mantuvo
+        para envíos proactivos vía `TELEGRAM_CHAT_ID` guardado, que
+        además devuelve `message_id` para el mapeo de reacciones —
+        no se fusionaron porque tienen firmas y usos distintos).
+        Eliminado código muerto del webhook histórico: `doPost`,
+        `okResponse`, `registrarWebhook` (el mecanismo vigente es
+        `pollTelegram()`; si se quiere reactivar el webhook, está en
+        el historial de git). `eliminarWebhook`/`verWebhookInfo` se
+        mantuvieron para diagnóstico.
+        **Pendiente**: pegar `Telegram.gs` y `Repaso.gs` en el editor
+        de Apps Script (borrar ahí también los 4 archivos viejos:
+        Form.gs, Polling.gs, SpacedRepetition.gs, PegarFrases.gs) y
+        confirmar que los triggers existentes (`tick`,
+        `enviarRecordatorioHoy`, `enviarRecordatorioAgregarPalabras`)
+        siguen apuntando bien a las funciones (mismo nombre, ahora en
+        archivo distinto — GAS resuelve por nombre de función a nivel
+        de proyecto, no debería requerir recrearlos, pero conviene
+        confirmar en la lista de triggers del editor).
 
 ## Aprendizajes ya confirmados (no repetir diagnóstico)
 
@@ -196,3 +214,28 @@ notas debajo de cada uno. No arrancar código hasta resolver esas dudas.
 - Revisado `Form.gs` e `Inboxdiccionario.gs` (2026-08-04): no hay choque de
   nombres de función/constante entre archivos, el resto del sistema Inbox
   → R/S funciona bien.
+
+
+## New Tasks
+      	
+1. separeme ENG de ALEMAN: 4 modos output. Pues tenemos otro Google Spreadsheet de las palabras en Ingles https://docs.google.com/spreadsheets/d/1BGkECkcjR9TS4YwW-H_iTJeV6egqTcnGc0K2WWZLszk/edit?usp=sharing. En donde la idea principal es que INOUT O OUTPUT los guarde en las hojas "VKBLY INPUT" Y "VKBLY OUTPUT". Lo dejo a tu disposicion de que me digas si toca crear otro proyecto en GAS o con este podemos editar 2 archivos distintos de google spreadsheets.
+	
+2. Deme el resumen de la semana, hagame un quiz, algo…
+		pre: para tal fecha tienen q estar todos las palabras del ultimo domingo al sabado .
+		
+		Pre: pues ponga la fecha en la columna A, una vez se reciba el primer elemento recibido o buscado… no desde media noche, sino desde 3am por aquello de…
+
+            Deja una nuea linea en el excel donde se note que empieza esa semana de evaluacion
+	
+	
+3. no me muestre la traduccion al reponder el emoji con 👎 / 🤔 si el mensaje es la traduccion en vez de la frase donde se usa.
+	
+4. nuevo param en modo guardar palabra, ya no solo en la columna B, sino agregar un segundo parametro para interiorizar despues de una ",". 
+Si viene ", B2"  en la columna "E"
+si recibe ", erinner" en la columna "I"
+si recibe ", verinnerlich", en la columna "L"
+
+5. si no hay palabras de un dia entero, diga un aviso o algo... pero que si llegue la notificacion de que el evento estaba scheduled
+
+6. la lista de dias a recordar, ya no es solo por dias, sino tambien por meses, y al final se crea un nuevo array por todos los dias...
+    Las primeras del dia son de ese mismo mes. La segunda mitad es de una nueva funcion tipo. El dia de hoy 01.09.2026 - pero de hace 8, 7 y 6 meses
