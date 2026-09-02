@@ -97,16 +97,9 @@ function onEdit(e) {
 
     rango.setValue(false); // Reinicia el "botón"
   }
-  /*
-  if (rango.getA1Notation() === "B55" && rango.getValue() === true) {
-    for (let i = 0; i < 7  ; i++) {
-     HORAS_LABORALES(i+3, 2, 49 ); 
-    }
-    rango.setValue(false); // Reinicia el "botón"
-  }*/
 
   if (rango.getA1Notation() === "N5" && rango.getValue() === true) {
-      const hoja = SpreadsheetApp.getActiveSheet();
+    const hoja = SpreadsheetApp.getActiveSheet();
 
       const targetRange = hoja.getRange("C2:I49");
       console.log("bgs a blanco");
@@ -115,12 +108,13 @@ function onEdit(e) {
       const values = targetRange.getValues();
       const backgrounds = targetRange.getBackgrounds();
 
-      for (let r = 0; r < values.length; r++) {
-        for (let c = 0; c < values[r].length; c++) {
-          if (values[r][c] === "") {
-            backgrounds[r][c] = "#ffffff";
-          }
-      }
+    for (let r = 0; r < values.length; r++) {
+      for (let c = 0; c < values[r].length; c++) {
+        if (values[r][c] === "") 
+        {
+          backgrounds[r][c] = "#ffffff";
+        }
+      } 
     }
   }
   
@@ -179,13 +173,30 @@ function limpiarFormulasHorasLaboralesTodasHojas() {
 }
 
 function cleanEmptyCells() {
-    const stdRange = hoja.getRange("C2:I49");
+    const hoja = SpreadsheetApp.getActiveSheet();
 
-    var data = stdRange.getValues();
-    //Do a for
-    if (rango.getValue() === "") {
-        rango.setBackground("#ffffff"); // Set to white when empty
+    const targetRange = hoja.getRange("C2:I49");
+    console.log("bgs a blanco");
+
+    const values = targetRange.getValues();
+    const backgrounds = targetRange.getBackgrounds();
+
+    for (let r = 0; r < values.length; r++) {
+      for (let c = 0; c < values[r].length; c++) {
+        if (values[r][c] === "")
+        {
+          backgrounds[r][c] = "#ffffff";
+        }
+      }
     }
+
+    targetRange.setBackgrounds(backgrounds);
+}
+
+/**to be used in desktop */
+function updateTotalAmountHours() {
+    actualizarHorasPorActividad();
+    actualizarHorasLaboralesFila52();
 }
 
 //col starts en 1, no en 0

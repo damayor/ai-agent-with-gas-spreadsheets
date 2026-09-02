@@ -17,6 +17,15 @@ function doGet(e) {
 // fila 49 = bloque 23:30-23:59.
 const TELEGRAM_FILA_BASE = 2;
 
+// Ventanas de margen (en minutos dentro del bloque de 30 min) usadas por
+// procesarActividad para decidir a qué bloque va un mensaje de Telegram.
+// MARGEN_CIERRE_BLOQUE_ANTERIOR: "Tag, end" en los primeros N min del
+// bloque actual se interpreta como cierre del bloque ANTERIOR completo.
+// MARGEN_SALTO_SIGUIENTE_BLOQUE: mensaje (sin end) a N min o menos de
+// terminar el bloque actual salta directo al bloque siguiente.
+const MARGEN_CIERRE_BLOQUE_ANTERIOR = 7;
+const MARGEN_SALTO_SIGUIENTE_BLOQUE = 5;
+
 function calcularFila(date){
 
   const h = date.getHours();
@@ -64,37 +73,60 @@ function procesarActividad(tag, isEnding = false){
   let minutes = now.getMinutes();
   let hours = now.getHours();
 
-  // calcular siguiente bloque
-  let nextBlock = null;
+  // Ticket #11: "Tag, end" recibido en los primeros MARGEN_CIERRE_BLOQUE_ANTERIOR
+  // min del bloque actual se interpreta al revés que el resto del rango: no
+  // cierra el bloque entrante, sino que dice "acabo de terminar una actividad
+  // que ocupó todo el bloque anterior". Se retrocede un bloque de 30 min y se
+  // escribe ese bloque anterior como completo (0.5h), sin tocar el bloque
+  // actual. Fuera de esa ventana, "end" sigue el comportamiento normal
+  // (bloque entrante como /2, ver más abajo).
+  const minutoDentroBloqueActual = minutes % 30;
+  const esCierreDeBloqueAnterior = isEnding && minutoDentroBloqueActual < MARGEN_CIERRE_BLOQUE_ANTERIOR;
 
-  if (minutes <= 30) {
-    nextBlock = 30;
-  } else {
-    nextBlock = 60;
-  }
-
-  const minutesToNext = nextBlock - minutes;
-
-  // si faltan 8 min o menos, saltamos al siguiente bloque
-  let saltoDeBloque = false;
-  if (minutesToNext <= 5) {
-
-    saltoDeBloque = true;
-
-    if (nextBlock === 60) {
-      hours += 1;
-      minutes = 0;
-    } else {
-      minutes = 30;
-    }
-
-  }
-  else {
+  if (esCierreDeBloqueAnterior) {
 
     if (minutes < 30) {
-      minutes = 0;
-    } else {
+      hours -= 1;
       minutes = 30;
+    } else {
+      minutes = 0;
+    }
+
+  } else {
+
+    // calcular siguiente bloque
+    let nextBlock = null;
+
+    if (minutes <= 30) {
+      nextBlock = 30;
+    } else {
+      nextBlock = 60;
+    }
+
+    const minutesToNext = nextBlock - minutes;
+
+    // si faltan MARGEN_SALTO_SIGUIENTE_BLOQUE min o menos, saltamos al siguiente bloque
+    var saltoDeBloque = false;
+    if (minutesToNext <= MARGEN_SALTO_SIGUIENTE_BLOQUE) {
+
+      saltoDeBloque = true;
+
+      if (nextBlock === 60) {
+        hours += 1;
+        minutes = 0;
+      } else {
+        minutes = 30;
+      }
+
+    }
+    else {
+
+      if (minutes < 30) {
+        minutes = 0;
+      } else {
+        minutes = 30;
+      }
+
     }
 
   }
@@ -117,21 +149,27 @@ function procesarActividad(tag, isEnding = false){
   // si el minuto real cae en la 2da mitad del bloque de 30 min (minuto
   // dentro del bloque >= 15), se asume que solo se alcanzó a trabajar
   // esa mitad -> se marca con el sufijo "/2" y cuenta 0.25h en vez de
-  // 0.5h. Si el mensaje ya saltó al siguiente bloque por el margen de
-  // 5 min (saltoDeBloque), se considera que arrancó ese bloque nuevo
-  // -> nunca es "/2" en ese caso.
+  // 0.5h. Si el mensaje ya saltó al siguiente bloque por el margen
+  // MARGEN_SALTO_SIGUIENTE_BLOQUE (saltoDeBloque), se considera que
+  // arrancó ese bloque nuevo -> nunca es "/2" en ese caso.
   // Ticket #10: "Tag,end" marca cierre temprano de actividad -> el bloque
-  // actual/entrante siempre cuenta como medio bloque (/2), sin importar el
-  // minuto real en que llegó el END (a diferencia de la regla >=15 de arriba,
-  // que es para inicios tardíos, no para cierres).
+  // actual/entrante cuenta como medio bloque (/2), sin importar el minuto
+  // real en que llegó el END (a diferencia de la regla >=15 de arriba, que
+  // es para inicios tardíos, no para cierres).
+  // Ticket #11: excepción — si el END llegó en la ventana
+  // MARGEN_CIERRE_BLOQUE_ANTERIOR del bloque actual (esCierreDeBloqueAnterior,
+  // ver más arriba), en realidad
+  // se refiere al bloque ANTERIOR completo, no al entrante -> ahí NO es /2,
+  // se escribe como bloque completo (0.5h) en el bloque anterior.
   const minutoDentroDelBloque = minutoReal % 30;
-  const esMedioBloque = isEnding || (!saltoDeBloque && minutoDentroDelBloque >= 15);
+  const esMedioBloque = esCierreDeBloqueAnterior
+    ? false
+    : (isEnding || (!saltoDeBloque && minutoDentroDelBloque >= 15));
 
   const minutoTexto = (minutoReal < 10 ? "0" : "") + minutoReal;
-  const tagConEnding = isEnding ? `${tag} END` : tag;
   const valorCelda = esMedioBloque
-    ? `${tagConEnding} /2 :${minutoTexto}`
-    : `${tagConEnding} :${minutoTexto}`;
+    ? `${tag} /2 :${minutoTexto}`
+    : `${tag} :${minutoTexto}`;
 
   console.log("Escribiendo en celda", cell.getA1Notation(),
     "(fila", row, "col", col, ") — día:", adjusted.getDay(),
@@ -147,6 +185,19 @@ function procesarActividad(tag, isEnding = false){
   cell.setFontLine("none"); // quita el tachado del planning para que sí sume en HORAS_LABORALES
 
   console.log("Escritura confirmada en", cell.getA1Notation());
+
+  // Rango de minutos del bloque de 30 min en el que quedó escrita la celda,
+  // para poder informarlo en la confirmación de Telegram.
+  const minutoInicioBloque = adjusted.getMinutes();
+  const minutoFinBloque = minutoInicioBloque + 29;
+  const horaTexto = (adjusted.getHours() < 10 ? "0" : "") + adjusted.getHours();
+  const rangoBloqueTexto = `${horaTexto}:${(minutoInicioBloque < 10 ? "0" : "") + minutoInicioBloque}-${horaTexto}:${minutoFinBloque}`;
+
+  return {
+    celda: cell.getA1Notation(),
+    rangoBloque: rangoBloqueTexto,
+    esMedioBloque: esMedioBloque
+  };
 }
 
 // ============================================================
@@ -202,15 +253,20 @@ function procesarUpdateTelegram(update) {
 
   console.log("tag:", tag, "| isEnding:", isEnding);
 
+  const resultado = procesarActividad(tag, isEnding);
+
   const token = getBotToken();
   if (chatId) {
     try {
+      const infoBloque = resultado
+        ? `\n: ${resultado.rangoBloque} (${resultado.esMedioBloque ? "0.25h" : "0.5h"})`
+        : "";
       UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: "post",
         contentType: "application/json",
         payload: JSON.stringify({
           chat_id: chatId,
-          text: `✅ update_id: ${updateId}\ntag: ${tag}`
+          text: `✅ ${tag}${infoBloque}`
         })
       });
     } catch(err) {
@@ -218,8 +274,6 @@ function procesarUpdateTelegram(update) {
       console.error("procesarUpdateTelegram: fallo enviando confirmación:", err.toString());
     }
   }
-
-  procesarActividad(tag, isEnding);
 }
 
 // NOTA (migración a polling): doPost queda sin usar una vez corrido
