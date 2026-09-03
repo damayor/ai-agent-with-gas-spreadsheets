@@ -258,6 +258,13 @@ const CONFIG_COL_ACTIVA = [
 ];
 const COL_ACTIVA_DEFAULT = "alle";
 
+// Cada columna de datos tiene su propio puntero de fila y su propia
+// fecha de último acceso. Cuando cambia el día, se reinician todos.
+const PROP_FECHA_ULTIMA = "FECHA_ULTIMA_";
+const PROP_PUNTERO_COL = "PUNTERO_COL_";
+const CONFIG_OFFSET_DIA_HORAS = 2;  // Día comienza a las 2 AM
+const CONFIG_VALIDAR_PUNTERO_ATRAS = 10;  // Revisar máximo 10 filas hacia atrás
+
 function obtenerColActiva() {
   const clave = PropertiesService.getScriptProperties().getProperty(PROP_COL_ACTIVA) || COL_ACTIVA_DEFAULT;
   return CONFIG_COL_ACTIVA.find(c => c.prefijo === clave) || CONFIG_COL_ACTIVA[0];
@@ -285,29 +292,71 @@ function guardarPalabraSuelta(texto, cambioColActiva) {
     if (!hoja) throw new Error(`No existe la hoja ${nombre}.`);
 
     const props      = PropertiesService.getScriptProperties();
-    const propPuntero = `PUNTERO_FILA_${nombre}`;
-    const maxRows     = hoja.getMaxRows();
-    const desde        = parseInt(props.getProperty(propPuntero) || "1");
 
+    // Calcular el "día" con offset configurable
+    const ahora = new Date();
+    const ahoraConZona = new Date(ahora.toLocaleString('en-US', { timeZone: ZONA_HORARIA }));
+    const horas = ahoraConZona.getHours();
+    // Si es antes del offset configurado, usar el día anterior
+    const diaAjustado = horas < CONFIG_OFFSET_DIA_HORAS ? new Date(ahoraConZona.getTime() - 24*60*60*1000) : ahoraConZona;
+    const hoy = Utilities.formatDate(diaAjustado, "UTC", "yyyy-MM-dd");
+
+    // Puntero y fecha específicos por columna
+    const propPunteroCol = `${PROP_PUNTERO_COL}${nombre}_${colInfo.col}`;
+    const propFechaCol   = `${PROP_FECHA_ULTIMA}${nombre}_${colInfo.col}`;
+
+    // Si cambió el día, reiniciar puntero de esta columna
+    const fechaUltima = props.getProperty(propFechaCol);
+    if (fechaUltima !== hoy) {
+      props.deleteProperty(propPunteroCol);
+      props.setProperty(propFechaCol, hoy);
+    }
+
+    const maxRows     = hoja.getMaxRows();
+    let desde        = parseInt(props.getProperty(propPunteroCol) || "1");
+
+    // Validar el puntero: revisar si realmente es el último o hay huecos
+    // Mirar hacia atrás según CONFIG_VALIDAR_PUNTERO_ATRAS
+    if (desde > 1) {
+      const rango_check = Math.max(1, desde - CONFIG_VALIDAR_PUNTERO_ATRAS);
+      const valores_check = hoja.getRange(rango_check, colInfo.col, desde - rango_check + 1, 1).getValues();
+      let ultimo_encontrado = desde - 1;
+
+      // Recorrer hacia atrás desde la posición del puntero
+      for (let i = valores_check.length - 1; i >= 0; i--) {
+        if (valores_check[i][0].toString().trim()) {
+          ultimo_encontrado = rango_check + i;
+          break;
+        }
+      }
+      desde = ultimo_encontrado + 1;
+    }
+
+    // Buscar última fila con dato EN ESTA COLUMNA ESPECÍFICA desde el desde ajustado
     const filasARevisar = maxRows - desde + 1;
     let ultimaFilaConDato = desde > 1 ? desde - 1 : 1; // fila 1 = header
 
     if (filasARevisar > 0) {
-      for (const col of COLS_DATO_PALABRA) {
-        const valores = hoja.getRange(desde, col, filasARevisar, 1).getValues();
-        for (let i = valores.length - 1; i >= 0; i--) {
-          if (valores[i][0].toString().trim()) {
-            const filaAbs = desde + i;
-            if (filaAbs > ultimaFilaConDato) ultimaFilaConDato = filaAbs;
-            break;
-          }
+      const valores = hoja.getRange(desde, colInfo.col, filasARevisar, 1).getValues();
+      for (let i = valores.length - 1; i >= 0; i--) {
+        if (valores[i][0].toString().trim()) {
+          const filaAbs = desde + i;
+          if (filaAbs > ultimaFilaConDato) ultimaFilaConDato = filaAbs;
+          break;
         }
       }
     }
 
     const fila = ultimaFilaConDato + 1;
+
+    // Si es la primera entrada del día en esta columna, escribir fecha en A
+    if (desde === 1 || !fechaUltima || fechaUltima !== hoy) {
+      const fechaDisplay = Utilities.formatDate(diaAjustado, "UTC", "EEE d");
+      hoja.getRange(fila, 1).setValue(fechaDisplay);
+    }
+
     hoja.getRange(fila, colInfo.col).setValue(texto);
-    props.setProperty(propPuntero, String(fila));
+    props.setProperty(propPunteroCol, String(fila));
     return { ok: true, hoja: nombre, fila, columna: colInfo.letra };
   } catch(err) {
     return { ok: false, mensaje: err.message };

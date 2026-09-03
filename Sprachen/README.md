@@ -15,7 +15,9 @@ afectado).
 - **`Telegram.gs`** — todo lo relacionado a Telegram: polling
   (`pollTelegram`, `tick`), ruteo de comandos (`procesarUpdateTelegram`),
   comandos `/intervalos`, `/modo`, `/nueva`, `/ver`, `/hoy`, reacciones
-  (👍/👎/🤔 sobre mensajes de repaso) y sus efectos en la hoja.
+  (👍/👎/🤔 sobre mensajes de repaso) y sus efectos en la hoja. Entrada de
+  texto libre con gestión de filas por columna, punteros independientes por
+  columna y día, con validación de huecos y date range headings.
 - **`Repaso.gs`** — repaso espaciado: arma y envía los recordatorios diarios
   (`enviarRecordatorioHoy`), intervalos configurables en días y meses,
   mapeo mensaje→celda para reacciones de Telegram.
@@ -77,13 +79,30 @@ desalineado con la nueva lista combinada. Corré `resetearContadorHoy()`
 una vez desde el editor de Apps Script para que el próximo disparo
 retome desde la posición 0.
 
+## Gestión de entrada de texto libre (palabra suelta)
+
+El comando de texto libre (sin `/`) guarda palabras en la columna activa de
+la hoja del modo actual. Cada columna (B/E/I/L) mantiene su propio puntero
+de última fila (`PUNTERO_COL_<hoja>_<columna>`) y fecha de último acceso
+(`FECHA_ULTIMA_<hoja>_<columna>`):
+
+- **Por día**: cuando cambia el día (offset configurable a las 2 AM), se
+  reinicia el puntero de esa columna y se anota la fecha en columna A
+  (formato `Wed 11`).
+- **Validación de puntero**: cada vez que se guarda, se revisa hacia atrás
+  hasta `CONFIG_VALIDAR_PUNTERO_ATRAS` filas (default 10) para detectar
+  huecos y ajustarse al verdadero último dato.
+- **Configurables** en `Telegram.gs`:
+  - `CONFIG_OFFSET_DIA_HORAS` — hora en que comienza el "día" (default 2)
+  - `CONFIG_VALIDAR_PUNTERO_ATRAS` — filas máximas a revisar hacia atrás (default 10)
+
 ## Constantes / recursos
 
 - Spreadsheet ID: `1yYJzqZmJOvM6lMMXLdf_ZWMEaa0_vvDWDeu87T2sm38`
 - Tab principal: `WoerterDesTages`
 - Zona horaria: `Europe/Berlin`
-- Columnas de `WoerterDesTages`: B=fecha, C/D/E=palabras (Wort), F=idioma
-  (`en` o vacío=alemán), G/H/I=traducciones español, K/L/M=oraciones de
+- Columnas de `WoerterDesTages`: A=date range heading, B=fecha, C/D/E=palabras (Wort),
+  F=idioma (`en` o vacío=alemán), G/H/I=traducciones español, K/L/M=oraciones de
   contexto (Satz)
 - El token de Telegram vive en `PropertiesService.getScriptProperties()`
   como `TELEGRAM_TOKEN` (nunca hardcodeado en el código).
