@@ -99,3 +99,5 @@ cumplen el formato esperado (o sea, celdas que no están tachadas).
    Telegram o editadas después, en negrita/itálica)?
 8. ¿El resumen agrupa por tag (ej. "Tag A: 2.5h, Tag B: 1h") o lista
    cada bloque individualmente con su rango horario?
+
+Vamos con tarea 1

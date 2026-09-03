@@ -54,26 +54,34 @@ columnas K/L/M).
 colorear celdas) para distinguir si la reacción cayó sobre un mensaje
 de Wort o de Satz, y solo responder con la traducción en el caso Satz.
 
-## 4. Segundo parámetro para "interiorizar" al guardar palabra
+## 4+7. Columna activa persistente para guardar palabra suelta — ✅ IMPLEMENTADA
 
 **Urgencia: 3 — Dificultad: 3**
 
-Al guardar una palabra suelta en modo input/output (los 4 modos de la
-tarea 1), se agrega un segundo parámetro opcional separado por coma:
+La tarea 4 original (segundo parámetro que sumaba una columna extra a
+B) quedó reemplazada por este diseño, decidido junto con la tarea 7:
+en vez de "B + columna extra", hay una única **columna activa**
+persistente (estilo `/modo`) donde se guarda el texto libre.
 
-- Sin coma → se guarda solo en columna B (comportamiento actual, sin
-  cambios).
-- `, B2` → además se guarda en columna E.
-- `, erinner` → además se guarda en columna I.
-- `, verinnerlich` → además se guarda en columna L.
+- Columna activa default: `alle` → columna B (comportamiento
+  original, sin cambios si nunca se toca nada).
+- Segundo parámetro separado por coma en cualquier mensaje de palabra
+  suelta cambia la columna activa **ya mismo** (esa palabra se guarda
+  en la columna nueva, no en B) y la deja **fijada** para los
+  mensajes sin coma que vengan después:
+  - `, alle` → vuelve a columna B.
+  - `, b2` → columna E.
+  - `, erin` (o cualquier string que empiece así, ej. `erinner`) →
+    columna I.
+  - `, verin` (o `verinnerlich`, etc.) → columna L.
+- Match por **prefijo** (`startsWith`), no palabra exacta.
+- Mismas columnas B/E/I/L para los 4 modos (input-de, output-de,
+  input-en, output-en) por igual — confirmado, no cambian según hoja.
+- `/modo` sin argumento ahora también muestra la columna activa
+  (además del modo idioma/dirección y la hoja destino).
 
-Aplica a los 4 modos (input-de, output-de, input-en, output-en) por
-igual.
-
-**A definir antes de programar:** ¿las columnas E/I/L son siempre las
-mismas sin importar el modo/idioma, o cambian según la hoja
-(VHS_INPUT/OUTPUT vs VKBLY INPUT/OUTPUT)? Revisar estructura real de
-las hojas de inglés antes de fijar los índices de columna.
+Implementado en `guardarPalabraSuelta` / `CONFIG_COL_ACTIVA` /
+`PROP_COL_ACTIVA` / `obtenerColActiva` (Telegram.gs).
 
 ## 5. Avisar cuando un día de repaso no tiene ninguna palabra
 
@@ -102,6 +110,63 @@ mitades —
 Ambas mitades se combinan en un único array antes de buscar las
 palabras a repasar.
 
+## 8. Bug: el puntero de última fila no ve reubicaciones manuales
+
+**Urgencia: (a definir) — Dificultad: (a definir)**
+
+**NO DESARROLLAR AÚN.**
+
+`guardarPalabraSuelta` (Telegram.gs) usa un puntero cacheado
+(`PUNTERO_FILA_<hoja>`) y busca la última fila con dato **desde ese
+puntero hacia adelante** para decidir la próxima fila libre. Problema:
+a veces se reubican palabras a mano en la hoja (se mueven de fila),
+lo que puede correr la última fila con dato real hacia una posición
+**anterior** al puntero cacheado — y el puntero no lo detecta porque
+nunca mira hacia atrás.
+
+Se pide que la búsqueda de la última fila con dato también revise
+unas filas **antes** del puntero cacheado (no solo desde ahí hacia
+adelante), para no pisar datos reubicados ni dejar huecos.
+
+A definir antes de programar: cuántas filas hacia atrás conviene
+revisar (¿un margen fijo, ej. 5-10 filas, o releer desde una fila fija
+más temprana?).
+
+## 9. Bug: fila guardada puede caer en la fila equivocada cerca de las 2 AM
+
+**Urgencia: (a definir) — Dificultad: (a definir)**
+revisa weil auf deutsch angebittet habe.
+
+**NO DESARROLLAR AÚN.**
+
+`guardarPalabraSuelta` (Telegram.gs) elige la fila de destino como la
+siguiente a la última fila con dato en B/E/I/L, sin ninguna noción de
+fecha/día. Problema observado (ver captura): cerca de la fila 652 hay
+varias columnas con datos de días distintos ya mezclados en filas
+consecutivas (ej. fila 657 "new week", fila 658 "monday") — la próxima
+palabra puede terminar escrita en una fila que en realidad "pertenece"
+a una columna de un día distinto, o pegada de más cerca a datos que no
+son del mismo día, en vez de arrancar una fila nueva y vacía para el
+día en curso.
+
+Se pide: si ya pasaron las 2 AM del día siguiente (zona horaria
+`ZONA_HORARIA` / `Europe/Berlin`) desde el último guardado, forzar que
+la próxima palabra se escriba en una fila nueva y completamente vacía
+(no en la "siguiente a la última con dato" calculada de la forma
+actual), para no mezclar palabras de días distintos en filas
+contiguas o cercanas.
+
+A definir antes de programar:
+- Cómo trackear "cuándo fue el último guardado" (¿timestamp en
+  PropertiesService junto al puntero de fila, por hoja?).
+- Qué significa exactamente "fila nueva y vacía" acá: ¿la fila
+  siguiente al máximo absoluto usado en la hoja (ignorando huecos), o
+  dejar directamente una fila en blanco de separación antes de
+  escribir?
+- Relación con la tarea 8 (bug del puntero mirando hacia atrás): ambas
+  tocan la misma función de cálculo de fila destino, conviene
+  revisarlas/diseñarlas juntas.
+
 ---
 
 ## Resumen de prioridad sugerida (por urgencia, luego dificultad ascendente)
@@ -110,5 +175,7 @@ palabras a repasar.
 2. Tarea 1 — urgencia 4, dificultad 4
 3. Tarea 3 — urgencia 3, dificultad 2
 4. Tarea 5 — urgencia 3, dificultad 2
-5. Tarea 4 — urgencia 3, dificultad 3
+5. Tarea 4+7 — urgencia 3, dificultad 3 (✅ implementada)
 6. Tarea 2 — urgencia 2, dificultad 5 (bloqueada por definición de diseño)
+7. Tarea 8 — urgencia/dificultad a definir (no desarrollar aún)
+8. Tarea 9 — urgencia/dificultad a definir (no desarrollar aún; relacionada con tarea 8)

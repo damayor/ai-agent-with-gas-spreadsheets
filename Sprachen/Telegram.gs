@@ -1,15 +1,21 @@
 // ============================================================
 // TELEGRAM — comandos, polling y ruteo del bot Wörter des Tages
 // ============================================================
-// Comandos Telegram:
+// Comandos Telegram (ver mensaje de ayuda completo más abajo, en el
+// bloque "/" desconocido de procesarUpdateTelegram):
 //   /nueva DD/MM, idioma, p1, p2, p3   (1 a 3 palabras, sin año)
 //   /ver DD/MM/YYYY
 //   /hoy
-//   /intervalos 30 14 7 3 2
-//   /intervalos reset
-//   /modo input | output
-//   (texto libre, sin "/")  -> se guarda como palabra suelta en
-//   VHS_INPUT/VHS_OUTPUT según el modo activo.
+//   /intervalos            -> muestra intervalos actuales
+//   /intervalos meses ...  / /intervalos dias ...  -> los cambia
+//   /intervalos meses reset / /intervalos dias reset
+//   /modo de input | de output | en input | en output
+//   (texto libre, sin "/")  -> se guarda como palabra suelta en la
+//   hoja (VHS_INPUT/VHS_OUTPUT/VKBLY INPUT/VKBLY OUTPUT) del modo activo,
+//   en la columna activa (default B / "alle").
+//   Segundo parámetro opcional separado por coma para cambiar la
+//   columna activa (por prefijo, queda fijo hasta el próximo cambio):
+//   texto, alle -> B | texto, b2 -> E | texto, erin(ner) -> I | texto, verin(nerlich) -> L
 //
 // Mecanismo de entrada vigente: pollTelegram() (más abajo), llamado
 // por tick() cada 1 minuto. El viejo webhook (doPost) sufría un 302
@@ -50,22 +56,48 @@ function procesarUpdateTelegram(update) {
   else if (texto.startsWith("/modo"))        manejarModo(chatId, texto);
   else if (texto.startsWith("/")) {
     responderTelegram(chatId,
-      "🤖 Comandos disponibles:\n\n" +
-      "/nueva <code>DD/MM, idioma, p1, p2, p3</code>  — 1 a 3 palabras\n" +
+      "🤖 <b>Comandos disponibles</b>\n\n" +
+      "/nueva <code>DD/MM, idioma, p1, p2, p3</code>\n" +
+      "  Registra 1 a 3 palabras (Wort, C/D/E) para esa fecha en la hoja principal.\n\n" +
       "/ver <code>DD/MM/YYYY</code>\n" +
+      "  Muestra las palabras y traducciones (spoiler) de esa fecha.\n\n" +
       "/hoy\n" +
-      "/intervalos <code>30 14 7 3</code>  — cambia intervalos\n" +
-      "/intervalos <code>reset</code>  — vuelve al default\n" +
-      "/modo <code>input</code> | <code>output</code>  — a qué hoja va el texto libre\n\n" +
-      "También podés escribirme una palabra suelta (sin \"/\") y la guardo directo en la hoja del modo activo."
+      "  Igual que /ver, pero con la fecha de hoy.\n\n" +
+      "/intervalos\n" +
+      "  Muestra los intervalos de repaso actuales (meses y días).\n" +
+      "/intervalos <code>meses 8 7 6 1</code>\n" +
+      "  Cambia los intervalos en meses (mismo día calendario, N meses atrás).\n" +
+      "/intervalos <code>dias 15 7 5</code>\n" +
+      "  Cambia los intervalos en días (N días atrás exactos).\n" +
+      "/intervalos <code>meses reset</code> | <code>dias reset</code>\n" +
+      "  Vuelve ese array al default.\n\n" +
+      "/modo\n" +
+      "  Muestra el modo activo (idioma + dirección), la hoja destino y la columna activa.\n" +
+      "/modo <code>de input</code> | <code>de output</code> | <code>en input</code> | <code>en output</code>\n" +
+      "  Define idioma y dirección del texto libre (sin \"/\") que mandes después.\n\n" +
+      "Texto libre (sin \"/\")\n" +
+      "  Se guarda en la columna activa (default B, \"alle\") de la hoja del modo activo.\n" +
+      "  Segundo parámetro opcional separado por coma para cambiar la columna activa (por prefijo, queda fijo hasta el próximo cambio):\n" +
+      "  <code>palabra, alle</code> (vuelve a B) · <code>palabra, b2</code> (a E) · <code>palabra, erin</code> (a I) · <code>palabra, verin</code> (a L)\n\n" +
+      "<b>Reacciones sobre un recordatorio de repaso</b> (Repaso.gs las procesa):\n" +
+      "❤️  — sabías la palabra de memoria, sin leer la frase. Wort y Satz quedan en verde.\n" +
+      "👍 / 👌  — te acordaste leyendo la frase de contexto. Wort en amarillo, Satz en verde.\n" +
+      "👎 / 🤔  — no la reconociste ni con la frase. Wort y Satz en amarillo, y te respondo con la traducción al español."
     );
   }
   else {
-    // Texto libre -> se escribe directo en VHS_INPUT o VHS_OUTPUT
-    // (columna B, próxima fila vacía) según el modo activo.
-    const res = guardarPalabraSuelta(texto);
+    // Texto libre -> se escribe en la columna activa (ver
+    // CONFIG_COL_ACTIVA / PROP_COL_ACTIVA), próxima fila vacía, de la
+    // hoja del modo activo (ver CONFIG_MODO_PALABRA). Columna activa
+    // default: B (alle). Segundo parámetro opcional separado por coma
+    // para cambiarla YA y de forma persistente: alle -> B, b2 -> E,
+    // erin(ner) -> I, verin(nerlich) -> L.
+    const partes = texto.split(",").map(s => s.trim());
+    const palabra = partes[0];
+    const cambioColActiva = partes[1];
+    const res = guardarPalabraSuelta(palabra, cambioColActiva);
     responderTelegram(chatId, res.ok
-      ? `📥 <b>${texto}</b> en B${res.fila}.`
+      ? `📥 <b>${palabra}</b> en ${res.hoja} ${res.columna}${res.fila}.`
       : `❌ ${res.mensaje}`
     );
   }
@@ -79,85 +111,128 @@ function manejarIntervalos(chatId, texto) {
   const args = texto.replace(/^\/intervalos\s*/i, "").trim();
 
   if (!args) {
-    const actuales = obtenerIntervalos();
+    const dias  = obtenerIntervalosDias();
+    const meses = obtenerIntervalosMeses();
     responderTelegram(chatId,
-      `📊 <b>Intervalos actuales:</b> ${actuales.map(d => `+${d}d`).join(" · ")}\n\n` +
-      `Para cambiar: <code>/intervalos 30 14 7 3</code>\n` +
-      `Para resetear: <code>/intervalos reset</code>`
+      `📊 <b>Intervalos actuales</b>\n` +
+      `Meses: ${meses.map(m => `+${m}m`).join(" · ")}\n` +
+      `Días: ${dias.map(d => `+${d}d`).join(" · ")}\n\n` +
+      `Orden de disparo: meses primero, luego días.\n\n` +
+      `Para cambiar: <code>/intervalos dias 15 7 5</code>\n` +
+      `             <code>/intervalos meses 8 7 6 1</code>\n` +
+      `Para resetear: <code>/intervalos dias reset</code>\n` +
+      `              <code>/intervalos meses reset</code>`
     );
     return;
   }
 
-  if (args.toLowerCase() === "reset") {
-    PropertiesService.getScriptProperties().deleteProperty("INTERVALOS");
+  const match = args.match(/^(dias|meses)\s*(.*)$/i);
+  if (!match) {
+    responderTelegram(chatId, "⚠️ Usá <code>/intervalos dias ...</code> o <code>/intervalos meses ...</code>");
+    return;
+  }
+  const tipo = match[1].toLowerCase();
+  const resto = match[2].trim();
+  const esDias = tipo === "dias";
+  const guardar   = esDias ? guardarIntervalosDias   : guardarIntervalosMeses;
+  const obtener   = esDias ? obtenerIntervalosDias    : obtenerIntervalosMeses;
+  const propKey   = esDias ? "INTERVALOS_DIAS" : "INTERVALOS_MESES";
+  const sufijo    = esDias ? "d" : "m";
+
+  if (resto.toLowerCase() === "reset") {
+    PropertiesService.getScriptProperties().deleteProperty(propKey);
     responderTelegram(chatId,
-      `↩️ Intervalos reseteados al default.\n` +
-      `Actuales: ${obtenerIntervalos().map(d => `+${d}d`).join(" · ")}`
+      `↩️ Intervalos de ${tipo} reseteados al default.\n` +
+      `Actuales: ${obtener().map(n => `+${n}${sufijo}`).join(" · ")}`
     );
     return;
   }
 
   // Parsear números separados por espacios o comas
-  const nuevos = args.split(/[\s,]+/)
+  const nuevos = resto.split(/[\s,]+/)
     .map(s => parseInt(s.trim()))
     .filter(n => !isNaN(n) && n > 0);
 
   if (nuevos.length === 0 || nuevos.length > 7) {
-    responderTelegram(chatId, "⚠️ Enviá entre 1 y 7 números. Ej: <code>/intervalos 30 14 7</code>");
+    responderTelegram(chatId, `⚠️ Enviá entre 1 y 7 números. Ej: <code>/intervalos ${tipo} 30 14 7</code>`);
     return;
   }
 
-  // Guardar en PropertiesService (compartido con Repaso.gs)
-  PropertiesService.getScriptProperties().setProperty("INTERVALOS", JSON.stringify(nuevos));
+  guardar(nuevos);
 
   responderTelegram(chatId,
-    `✅ <b>Intervalos actualizados:</b>\n` +
-    nuevos.map((d, i) => `  ${i+1}. Activador del día → +${d}d`).join("\n") + "\n\n" +
+    `✅ <b>Intervalos de ${tipo} actualizados:</b>\n` +
+    nuevos.map((n, i) => `  ${i+1}. Activador → +${n}${sufijo}`).join("\n") + "\n\n" +
     `<i>El cambio aplica desde el próximo disparo automático.</i>`
   );
 }
 
 // ============================================================
-// Comando /modo — a qué hoja va el texto libre (VHS_INPUT/VHS_OUTPUT)
+// Comando /modo — idioma + dirección del texto libre
 // ============================================================
+// Formato: /modo <idioma> <direccion>  (ej. /modo en input, /modo de output)
+// 4 combinaciones posibles: de-input, de-output, en-input, en-output.
 
 const PROP_MODO_PALABRA = "MODO_PALABRA";
-const HOJA_VHS_INPUT    = "VHS_INPUT";
-const HOJA_VHS_OUTPUT   = "VHS_OUTPUT";
-const COL_B_PALABRA     = 2;
+
+const ID_HOJA_EN = "1BGkECkcjR9TS4YwW-H_iTJeV6egqTcnGc0K2WWZLszk";
+
+// modo ("de-input" etc.) -> { spreadsheetId, hoja }
+const CONFIG_MODO_PALABRA = {
+  "de-input":  { spreadsheetId: ID_HOJA,    hoja: "VHS_INPUT"    },
+  "de-output": { spreadsheetId: ID_HOJA,    hoja: "VHS_OUTPUT"   },
+  "en-input":  { spreadsheetId: ID_HOJA_EN, hoja: "VKBLY_INPUT"  },
+  "en-output": { spreadsheetId: ID_HOJA_EN, hoja: "VKBLY_OUTPUT" },
+};
+const MODO_PALABRA_DEFAULT = "de-input";
 
 function obtenerModoPalabra() {
   const props = PropertiesService.getScriptProperties();
-  return props.getProperty(PROP_MODO_PALABRA) || "input";
+  return props.getProperty(PROP_MODO_PALABRA) || MODO_PALABRA_DEFAULT;
 }
 
 function manejarModo(chatId, texto) {
   const arg = texto.replace(/^\/modo\s*/i, "").trim().toLowerCase();
 
   if (!arg) {
+    const actual   = obtenerModoPalabra();
+    const colActiva = obtenerColActiva();
     responderTelegram(chatId,
-      `🔧 Modo actual: <b>${obtenerModoPalabra().toUpperCase()}</b>\n\n` +
-      `Para cambiar: <code>/modo input</code> o <code>/modo output</code>`
+      `🔧 Modo actual: <b>${actual}</b> (hoja <b>${CONFIG_MODO_PALABRA[actual].hoja}</b>)\n` +
+      `📌 Columna activa: <b>${colActiva.prefijo}</b> (columna <b>${colActiva.letra}</b>)\n\n` +
+      `Para cambiar el modo: <code>/modo de input</code>, <code>/modo de output</code>, ` +
+      `<code>/modo en input</code> o <code>/modo en output</code>\n` +
+      `Para cambiar la columna activa: mandá <code>palabra, alle|b2|erin|verin</code>`
     );
     return;
   }
 
-  if (!["input", "output"].includes(arg)) {
-    responderTelegram(chatId, "⚠️ Modo inválido. Usá <code>/modo input</code> o <code>/modo output</code>");
+  const partes = arg.split(/\s+/);
+  const idioma = partes[0];
+  const direccion = partes[1];
+  const modo = `${idioma}-${direccion}`;
+
+  if (!CONFIG_MODO_PALABRA[modo]) {
+    responderTelegram(chatId,
+      "⚠️ Modo inválido. Usá <code>/modo de input</code>, <code>/modo de output</code>, " +
+      "<code>/modo en input</code> o <code>/modo en output</code>"
+    );
     return;
   }
 
-  PropertiesService.getScriptProperties().setProperty(PROP_MODO_PALABRA, arg);
-  responderTelegram(chatId, `✅ Modo cambiado a <b>${arg.toUpperCase()}</b>. El texto libre ahora se guarda en <b>${arg === "input" ? HOJA_VHS_INPUT : HOJA_VHS_OUTPUT}</b>.`);
+  PropertiesService.getScriptProperties().setProperty(PROP_MODO_PALABRA, modo);
+  responderTelegram(chatId, `✅ Modo cambiado a <b>${modo}</b>. El texto libre ahora se guarda en <b>${CONFIG_MODO_PALABRA[modo].hoja}</b>.`);
 }
 
 // ------------------------------------------------------------
-// Guarda una palabra suelta en columna B de VHS_INPUT/VHS_OUTPUT.
-// La hoja tiene huecos reales en columna B (no es continua), así que
-// buscar la primera B vacía desde arriba encuentra huecos viejos en
-// medio de los datos (ej. B15) en vez del final real de la data.
-// En cambio: la fila de destino es la siguiente a la última fila
-// que tenga contenido en B, E, I o L (columnas con datos reales
+// Guarda una palabra suelta en la columna activa (ver
+// CONFIG_COL_ACTIVA/PROP_COL_ACTIVA) de la hoja del modo activo
+// (VHS_INPUT/VHS_OUTPUT en alemán, VKBLY INPUT/OUTPUT en inglés).
+// La hoja tiene huecos reales en esas columnas (no son continuas),
+// así que buscar la primera celda vacía desde arriba encontraría
+// huecos viejos en medio de los datos en vez del final real de la
+// data. En cambio: la fila de destino es la siguiente a la última
+// fila que tenga contenido en B, E, I o L (columnas con datos reales
 // esparcidos — ver categorías "Alle die Worter"/"Wichtigste"/
 // "Erinner Mall"/"verinerliche!").
 //
@@ -168,12 +243,44 @@ function manejarModo(chatId, texto) {
 // ------------------------------------------------------------
 const COLS_DATO_PALABRA = [2, 5, 9, 12]; // B, E, I, L
 
-function guardarPalabraSuelta(texto) {
-  try {
-    const modo   = obtenerModoPalabra();
-    const nombre = modo === "output" ? HOJA_VHS_OUTPUT : HOJA_VHS_INPUT;
+// Columna activa donde se guarda el texto libre ("interiorizar", al
+// estilo /modo). Se fija mandando "palabra, <prefijo>" — el cambio
+// aplica YA a esa palabra y queda persistente para los mensajes sin
+// coma que vengan después. Match por prefijo (ej. "erin" alcanza
+// para "erinner"). "alle" vuelve al comportamiento base: columna B
+// (Alle die Wörter).
+const PROP_COL_ACTIVA = "COL_ACTIVA_PALABRA";
+const CONFIG_COL_ACTIVA = [
+  { prefijo: "alle",  col: 2,  letra: "B" },
+  { prefijo: "b2",    col: 5,  letra: "E" },
+  { prefijo: "erin",  col: 9,  letra: "I" },
+  { prefijo: "verin", col: 12, letra: "L" },
+];
+const COL_ACTIVA_DEFAULT = "alle";
 
-    const ss   = SpreadsheetApp.openById(ID_HOJA);
+function obtenerColActiva() {
+  const clave = PropertiesService.getScriptProperties().getProperty(PROP_COL_ACTIVA) || COL_ACTIVA_DEFAULT;
+  return CONFIG_COL_ACTIVA.find(c => c.prefijo === clave) || CONFIG_COL_ACTIVA[0];
+}
+
+function guardarPalabraSuelta(texto, cambioColActiva) {
+  try {
+    let colInfo;
+    if (cambioColActiva) {
+      const clave = cambioColActiva.toLowerCase();
+      const encontrada = CONFIG_COL_ACTIVA.find(c => clave.startsWith(c.prefijo));
+      if (!encontrada) throw new Error(`Segundo parámetro inválido: "${cambioColActiva}". Usá alle, b2, erin(ner) o verin(nerlich).`);
+      PropertiesService.getScriptProperties().setProperty(PROP_COL_ACTIVA, encontrada.prefijo);
+      colInfo = encontrada;
+    } else {
+      colInfo = obtenerColActiva();
+    }
+
+    const modo   = obtenerModoPalabra();
+    const config = CONFIG_MODO_PALABRA[modo];
+    const nombre = config.hoja;
+
+    const ss   = SpreadsheetApp.openById(config.spreadsheetId);
     const hoja = ss.getSheetByName(nombre);
     if (!hoja) throw new Error(`No existe la hoja ${nombre}.`);
 
@@ -199,9 +306,9 @@ function guardarPalabraSuelta(texto) {
     }
 
     const fila = ultimaFilaConDato + 1;
-    hoja.getRange(fila, COL_B_PALABRA).setValue(texto);
+    hoja.getRange(fila, colInfo.col).setValue(texto);
     props.setProperty(propPuntero, String(fila));
-    return { ok: true, hoja: nombre, fila };
+    return { ok: true, hoja: nombre, fila, columna: colInfo.letra };
   } catch(err) {
     return { ok: false, mensaje: err.message };
   }

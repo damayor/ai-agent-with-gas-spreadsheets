@@ -7,23 +7,47 @@
 
 const EMAIL_DESTINO = "dr.mayorga20@gmail.com";
 
-// INTERVALOS — se puede sobreescribir desde Telegram con /intervalos
+// INTERVALOS_DIAS / INTERVALOS_MESES — se pueden sobreescribir desde
+// Telegram con /intervalos dias ... y /intervalos meses ...
 // Si hay un valor guardado en PropertiesService, ese tiene prioridad.
-// Para resetear al valor de acá, usá /intervalos reset desde Telegram.
-const INTERVALOS_DEFAULT = [2, 5, 7, 14, 30, 120, 90];
+// Para resetear al valor de acá, usá /intervalos dias reset (o meses reset).
+const INTERVALOS_DIAS_DEFAULT  = [15, 7, 5];
+const INTERVALOS_MESES_DEFAULT = [8, 7, 6, 1];
 const HORAS_TRIGGER_REPASO = [9, 11, 13, 15, 17, 19, 21];
 
-function obtenerIntervalos() {
+function obtenerIntervalosDias() {
   const props = PropertiesService.getScriptProperties();
-  const guardado = props.getProperty("INTERVALOS");
+  const guardado = props.getProperty("INTERVALOS_DIAS");
   if (guardado) {
     try { return JSON.parse(guardado); } catch(e) {}
   }
-  return INTERVALOS_DEFAULT;
+  return INTERVALOS_DIAS_DEFAULT;
 }
 
-function guardarIntervalos(arr) {
-  PropertiesService.getScriptProperties().setProperty("INTERVALOS", JSON.stringify(arr));
+function guardarIntervalosDias(arr) {
+  PropertiesService.getScriptProperties().setProperty("INTERVALOS_DIAS", JSON.stringify(arr));
+}
+
+function obtenerIntervalosMeses() {
+  const props = PropertiesService.getScriptProperties();
+  const guardado = props.getProperty("INTERVALOS_MESES");
+  if (guardado) {
+    try { return JSON.parse(guardado); } catch(e) {}
+  }
+  return INTERVALOS_MESES_DEFAULT;
+}
+
+function guardarIntervalosMeses(arr) {
+  PropertiesService.getScriptProperties().setProperty("INTERVALOS_MESES", JSON.stringify(arr));
+}
+
+// Lista combinada de activadores del día: primero meses, luego días.
+// Cada entrada es { tipo: "meses"|"dias", valor: n }.
+function obtenerActivadoresDelDia() {
+  return [
+    ...obtenerIntervalosMeses().map(valor => ({ tipo: "meses", valor })),
+    ...obtenerIntervalosDias().map(valor => ({ tipo: "dias", valor })),
+  ];
 }
 
 // --- Contador diario -----------------------------------------
@@ -54,18 +78,17 @@ function verContadorHoy() {
 
 // --- Utilidades ----------------------------------------------
 
-function etiquetaDias(dias, fechaOrigen) {
-  const INTERVALOS = obtenerIntervalos();
-  const esUltimo   = dias === INTERVALOS[INTERVALOS.length - 1];
-  const sufijo     = esUltimo ? " ✅" : "";
+function etiquetaDias(activador, fechaOrigen, esUltimo) {
+  const sufijo = esUltimo ? " ✅" : "";
 
-  // Formato: "Lun 23 Jun (+3d)"
+  // Formato: "Lun 23 Jun (+3d)" o "Lun 23 Mar (+6m)"
   const diasSemana = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
   const diaSem     = diasSemana[fechaOrigen.getDay()];
   const diaMes     = fechaOrigen.getDate().toString().padStart(2, "0");
   const mesCorto   = fechaOrigen.toLocaleString('de-DE', { month: 'short' });
+  const sufijoTipo = activador.tipo === "meses" ? "m" : "d";
 
-  return `${diaSem} ${diaMes}-${mesCorto} (+${dias}d)${sufijo}`;
+  return `${diaSem} ${diaMes}-${mesCorto} (+${activador.valor}${sufijoTipo})${sufijo}`;
 }
 
 function tieneFrase(celda) {
@@ -124,7 +147,18 @@ function obtenerMapeoReaccion(messageId) {
 
 // --- Lógica principal ----------------------------------------
 
-function obtenerPalabras(fechaRef, dias) {
+function restarMeses(fecha, n) {
+  const f = new Date(fecha);
+  f.setHours(0,0,0,0);
+  const diaOriginal = f.getDate();
+  f.setMonth(f.getMonth() - n);
+  // Si el mes destino no tiene ese día (ej. 31 → Feb), setMonth lo
+  // desborda al mes siguiente; lo corregimos al último día del mes destino.
+  if (f.getDate() !== diaOriginal) f.setDate(0);
+  return f;
+}
+
+function obtenerPalabras(fechaRef, dias, fechaExacta) {
   const hoy  = new Date(fechaRef); hoy.setHours(0,0,0,0);
   const ss   = SpreadsheetApp.openById(ID_HOJA);
   const hoja = ss.getSheetByName(NOMBRE_TAB);
@@ -138,10 +172,14 @@ function obtenerPalabras(fechaRef, dias) {
     const fechaAnotacion = parsearFecha(fila[1]);
     if (!fechaAnotacion) continue;
 
-    const diffDias = Math.round(
-      (hoy.getTime() - fechaAnotacion.getTime()) / (1000*60*60*24)
-    );
-    if (diffDias !== dias) continue;
+    if (fechaExacta) {
+      if (fechaAnotacion.getTime() !== fechaExacta.getTime()) continue;
+    } else {
+      const diffDias = Math.round(
+        (hoy.getTime() - fechaAnotacion.getTime()) / (1000*60*60*24)
+      );
+      if (diffDias !== dias) continue;
+    }
 
     const esIngles = (fila[5]||"").toString().trim().toLowerCase() === "en";
 
@@ -169,29 +207,35 @@ function obtenerPalabras(fechaRef, dias) {
 }
 
 function enviarRecordatorioHoy() {
-  const INTERVALOS = obtenerIntervalos();
-  const posicion   = obtenerIndiceDeHoy();
-  const dias       = INTERVALOS[posicion];
+  const activadores = obtenerActivadoresDelDia();
+  const posicion     = obtenerIndiceDeHoy();
+  const activador     = activadores[posicion];
 
-  if (dias === undefined) {
-    Logger.log(`ℹ️ Disparo #${posicion+1} ignorado — solo hay ${INTERVALOS.length} intervalos.`);
+  if (activador === undefined) {
+    Logger.log(`ℹ️ Disparo #${posicion+1} ignorado — solo hay ${activadores.length} activadores.`);
     return;
   }
 
-  Logger.log(`Disparo #${posicion+1} → +${dias}d`);
+  const etiquetaActivador = `+${activador.valor}${activador.tipo === "meses" ? "m" : "d"}`;
+  Logger.log(`Disparo #${posicion+1} → ${etiquetaActivador}`);
 
-  const { palabrasDE, palabrasEN } = obtenerPalabras(new Date(), dias);
+  const hoy = new Date();
+  const { palabrasDE, palabrasEN } = activador.tipo === "meses"
+    ? obtenerPalabras(hoy, null, restarMeses(hoy, activador.valor))
+    : obtenerPalabras(hoy, activador.valor);
+
   const todas = [
     ...palabrasDE.map(p => ({ ...p, bandera: "🇩🇪" })),
     ...palabrasEN.map(p => ({ ...p, bandera: "🇬🇧" })),
   ];
 
-  if (todas.length === 0) { Logger.log(`No hay palabras para +${dias}d hoy.`); return; }
+  if (todas.length === 0) { Logger.log(`No hay palabras para ${etiquetaActivador} hoy.`); return; }
 
   const correoNum  = posicion + 1;
-  const totalAct   = INTERVALOS.length;
+  const totalAct   = activadores.length;
   const fechaOrig  = todas[0].fecha;
-  const etiqueta   = etiquetaDias(dias, fechaOrig);
+  const esUltimo   = posicion === activadores.length - 1;
+  const etiqueta   = etiquetaDias(activador, fechaOrig, esUltimo);
 
   // Mensaje 1 — Header
   enviarTelegram(
@@ -207,14 +251,15 @@ function enviarRecordatorioHoy() {
     if (messageId) guardarMapeoReaccion(messageId, p.fila, p.col, p.orig);
   }
 
-  Logger.log(`Enviados: 1 header + ${todas.length} palabras (+${dias}d)`);
+  Logger.log(`Enviados: 1 header + ${todas.length} palabras (${etiquetaActivador})`);
 }
 
-// --- Triggers de repaso — uno por cada posición de INTERVALOS -
+// --- Triggers de repaso — uno por cada posición de la lista combinada
+// (obtenerActivadoresDelDia: meses primero, luego días) --------
 
-// Horas de disparo (una por intervalo, en orden). enviarRecordatorioHoy()
+// Horas de disparo (una por activador, en orden). enviarRecordatorioHoy()
 // sigue usando su contador secuencial de disparos del día
-// (obtenerIndiceDeHoy) para saber qué posición de INTERVALOS le toca —
+// (obtenerIndiceDeHoy) para saber qué posición de la lista le toca —
 // estos triggers solo fijan A QUÉ HORA se dispara cada llamada.
 
 function crearTriggersRepaso() {
@@ -279,14 +324,17 @@ function probarSimulacion() {
   const posicionSim   = 4;
   // ↑↑ ————————————————————————— ↑↑
 
-  const INTERVALOS = obtenerIntervalos();
-  const dias = INTERVALOS[posicionSim];
-  if (dias === undefined) { Logger.log("Posición inválida."); return; }
+  const activadores = obtenerActivadoresDelDia();
+  const activador = activadores[posicionSim];
+  if (activador === undefined) { Logger.log("Posición inválida."); return; }
 
   fechaSimulada.setHours(0,0,0,0);
-  Logger.log(`=== SIMULACIÓN: ${fechaSimulada.toDateString()} · +${dias}d ===`);
+  const etiquetaActivador = `+${activador.valor}${activador.tipo === "meses" ? "m" : "d"}`;
+  Logger.log(`=== SIMULACIÓN: ${fechaSimulada.toDateString()} · ${etiquetaActivador} ===`);
 
-  const { palabrasDE, palabrasEN } = obtenerPalabras(fechaSimulada, dias);
+  const { palabrasDE, palabrasEN } = activador.tipo === "meses"
+    ? obtenerPalabras(fechaSimulada, null, restarMeses(fechaSimulada, activador.valor))
+    : obtenerPalabras(fechaSimulada, activador.valor);
   const todas = [
     ...palabrasDE.map(p => ({ ...p, bandera: "🇩🇪" })),
     ...palabrasEN.map(p => ({ ...p, bandera: "🇬🇧" })),
@@ -297,11 +345,12 @@ function probarSimulacion() {
 
   if (todas.length === 0) { Logger.log("Sin palabras."); return; }
 
-  const etiqueta = etiquetaDias(dias, todas[0].fecha);
+  const esUltimo = posicionSim === activadores.length - 1;
+  const etiqueta = etiquetaDias(activador, todas[0].fecha, esUltimo);
 
   // Header con tag [SIMULACIÓN]
   enviarTelegram(
-    `🧪 <b>[SIMULACIÓN] ${posicionSim+1}/${INTERVALOS.length}</b>\n` +
+    `🧪 <b>[SIMULACIÓN] ${posicionSim+1}/${activadores.length}</b>\n` +
     `📅 ${etiqueta}\n`
   );
 
