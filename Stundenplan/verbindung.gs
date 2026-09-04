@@ -61,8 +61,20 @@ function testCelda(tag) {
 
 }
 
-//ToTest  9:05  Unity
-function procesarActividad(tag, isEnding = false){
+// Ticket #12: "/2" pasó a ser SIEMPRE input explícito del usuario — el
+// código ya no infiere medio bloque por el minuto de llegada del mensaje
+// en ningún caso (ni con "end" ni sin él). Regla única:
+//   - esMedioBloqueInput decide CUÁNTO cuenta el bloque escrito (0.5h o
+//     0.25h) — nunca se adivina por minuto de llegada.
+//   - isEnding decide A QUÉ bloque se escribe (ver más abajo): dentro de
+//     la ventana de gracia MARGEN_CIERRE_BLOQUE_ANTERIOR se interpreta
+//     como "acabo de cerrar el bloque anterior" (retrocede un bloque);
+//     fuera de esa ventana, "end" cierra el bloque actual/entrante.
+//   - Sin "end", el mensaje simplemente escribe en el bloque en curso
+//     (o salta al siguiente si llega en el margen de cierre del bloque,
+//     MARGEN_SALTO_SIGUIENTE_BLOQUE, para no pisar un bloque que ya casi
+//     terminó).
+function procesarActividad(tag, isEnding = false, esMedioBloqueInput = false){
 
   const sheet = SpreadsheetApp
     .openById(SPREADSHEET_ID)
@@ -73,60 +85,47 @@ function procesarActividad(tag, isEnding = false){
   let minutes = now.getMinutes();
   let hours = now.getHours();
 
-  // Ticket #11: "Tag, end" recibido en los primeros MARGEN_CIERRE_BLOQUE_ANTERIOR
-  // min del bloque actual se interpreta al revés que el resto del rango: no
-  // cierra el bloque entrante, sino que dice "acabo de terminar una actividad
-  // que ocupó todo el bloque anterior". Se retrocede un bloque de 30 min y se
-  // escribe ese bloque anterior como completo (0.5h), sin tocar el bloque
-  // actual. Fuera de esa ventana, "end" sigue el comportamiento normal
-  // (bloque entrante como /2, ver más abajo).
   const minutoDentroBloqueActual = minutes % 30;
   const esCierreDeBloqueAnterior = isEnding && minutoDentroBloqueActual < MARGEN_CIERRE_BLOQUE_ANTERIOR;
 
-  if (esCierreDeBloqueAnterior) {
+  if (isEnding) {
 
-    if (minutes < 30) {
-      hours -= 1;
-      minutes = 30;
+    if (esCierreDeBloqueAnterior) {
+      // "Tag, end" en los primeros MARGEN_CIERRE_BLOQUE_ANTERIOR min del
+      // bloque actual -> se refiere al bloque ANTERIOR, que se acaba de
+      // cerrar. Retrocede un bloque de 30 min.
+      if (minutes < 30) {
+        hours -= 1;
+        minutes = 30;
+      } else {
+        minutes = 0;
+      }
     } else {
-      minutes = 0;
+      // "Tag, end" fuera de esa ventana -> cierra el bloque actual/entrante.
+      if (minutes < 30) {
+        minutes = 0;
+      } else {
+        minutes = 30;
+      }
     }
 
   } else {
 
-    // calcular siguiente bloque
-    let nextBlock = null;
-
-    if (minutes <= 30) {
-      nextBlock = 30;
-    } else {
-      nextBlock = 60;
-    }
-
+    // Sin "end": escribe en el bloque en curso, salvo que falten
+    // MARGEN_SALTO_SIGUIENTE_BLOQUE min o menos para que termine — en ese
+    // caso se considera que ya no alcanza y salta al bloque siguiente.
+    const nextBlock = minutes <= 30 ? 30 : 60;
     const minutesToNext = nextBlock - minutes;
 
-    // si faltan MARGEN_SALTO_SIGUIENTE_BLOQUE min o menos, saltamos al siguiente bloque
-    var saltoDeBloque = false;
     if (minutesToNext <= MARGEN_SALTO_SIGUIENTE_BLOQUE) {
-
-      saltoDeBloque = true;
-
       if (nextBlock === 60) {
         hours += 1;
         minutes = 0;
       } else {
         minutes = 30;
       }
-
-    }
-    else {
-
-      if (minutes < 30) {
-        minutes = 0;
-      } else {
-        minutes = 30;
-      }
-
+    } else {
+      minutes = minutes < 30 ? 0 : 30;
     }
 
   }
@@ -144,30 +143,8 @@ function procesarActividad(tag, isEnding = false){
 
   const cell = sheet.getRange(row, col);
 
-  // Sufijo ":MM" con el minuto real (sin redondear) en que llegó el
-  // mensaje. Regla de conteo (leída por HORAS_LABORALES en Codigo.gs):
-  // si el minuto real cae en la 2da mitad del bloque de 30 min (minuto
-  // dentro del bloque >= 15), se asume que solo se alcanzó a trabajar
-  // esa mitad -> se marca con el sufijo "/2" y cuenta 0.25h en vez de
-  // 0.5h. Si el mensaje ya saltó al siguiente bloque por el margen
-  // MARGEN_SALTO_SIGUIENTE_BLOQUE (saltoDeBloque), se considera que
-  // arrancó ese bloque nuevo -> nunca es "/2" en ese caso.
-  // Ticket #10: "Tag,end" marca cierre temprano de actividad -> el bloque
-  // actual/entrante cuenta como medio bloque (/2), sin importar el minuto
-  // real en que llegó el END (a diferencia de la regla >=15 de arriba, que
-  // es para inicios tardíos, no para cierres).
-  // Ticket #11: excepción — si el END llegó en la ventana
-  // MARGEN_CIERRE_BLOQUE_ANTERIOR del bloque actual (esCierreDeBloqueAnterior,
-  // ver más arriba), en realidad
-  // se refiere al bloque ANTERIOR completo, no al entrante -> ahí NO es /2,
-  // se escribe como bloque completo (0.5h) en el bloque anterior.
-  const minutoDentroDelBloque = minutoReal % 30;
-  const esMedioBloque = esCierreDeBloqueAnterior
-    ? false
-    : (isEnding || (!saltoDeBloque && minutoDentroDelBloque >= 15));
-
   const minutoTexto = (minutoReal < 10 ? "0" : "") + minutoReal;
-  const valorCelda = esMedioBloque
+  const valorCelda = esMedioBloqueInput
     ? `${tag} /2 :${minutoTexto}`
     : `${tag} :${minutoTexto}`;
 
@@ -196,7 +173,7 @@ function procesarActividad(tag, isEnding = false){
   return {
     celda: cell.getA1Notation(),
     rangoBloque: rangoBloqueTexto,
-    esMedioBloque: esMedioBloque
+    esMedioBloque: esMedioBloqueInput
   };
 }
 
@@ -235,6 +212,36 @@ function clearTelegramWebhook() {
 }
 
 // ============================================================
+// Comando /calend [ayer] — resumen de actividades del día por Telegram.
+// Reutiliza resumenDiaActividades (Codigo.gs), que ya arma el texto
+// línea por línea agrupado por color y ordenado cronológicamente.
+// ============================================================
+function manejarComandoCalend(msgText, chatId) {
+  const arg = msgText.trim().split(/\s+/)[1]?.toLowerCase();
+  const dia = arg === "ayer" ? new Date(Date.now() - 86400000) : new Date();
+
+  const { lineas } = resumenDiaActividades(dia);
+  const titulo = arg === "ayer" ? "Resumen de ayer" : "Resumen de hoy";
+  const texto = `${titulo}\n\n${lineas.join("\n")}`;
+
+  const token = getBotToken();
+  if (chatId && token) {
+    try {
+      UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "post",
+        contentType: "application/json",
+        payload: JSON.stringify({
+          chat_id: chatId,
+          text: texto
+        })
+      });
+    } catch(err) {
+      console.error("manejarComandoCalend: fallo enviando resumen:", err.toString());
+    }
+  }
+}
+
+// ============================================================
 // Ruteo de update — usado tanto por doPost (histórico) como por
 // pollTelegram (mecanismo vigente, ver Polling.gs)
 // ============================================================
@@ -247,13 +254,24 @@ function procesarUpdateTelegram(update) {
 
   if (!msgText) return;
 
+  // Comando /calend [ayer] — resumen del día por Telegram (ver
+  // resumenDiaActividades en Codigo.gs). Sin argumento = hoy.
+  if (msgText.trim().toLowerCase().startsWith("/calend")) {
+    manejarComandoCalend(msgText, chatId);
+    return;
+  }
+
+  // Formato: "Tag[ /2][, end]". El "/2" es siempre explícito (input del
+  // usuario, ver Ticket #12) — nunca se infiere del minuto de llegada.
   const parts = msgText.split(",").map(p => p.trim());
-  const tag = parts[0];
+  const primeraParteRaw = parts[0];
+  const esMedioBloqueInput = /\/2\s*$/.test(primeraParteRaw);
+  const tag = primeraParteRaw.replace(/\/2\s*$/, "").trim();
   const isEnding = parts[1]?.toLowerCase() === "end";
 
-  console.log("tag:", tag, "| isEnding:", isEnding);
+  console.log("tag:", tag, "| isEnding:", isEnding, "| esMedioBloqueInput:", esMedioBloqueInput);
 
-  const resultado = procesarActividad(tag, isEnding);
+  const resultado = procesarActividad(tag, isEnding, esMedioBloqueInput);
 
   const token = getBotToken();
   if (chatId) {
@@ -309,3 +327,8 @@ function testDoPost() {
   doPost(fakeEvent);
 
 }
+
+// NOTA: el resumen diario de actividades (enviarResumenDiaActividades) se
+// movió a Codigo.gs — no tiene relación con el webhook/polling de Telegram,
+// y reutiliza la misma lectura de backgrounds/fontLines que
+// actualizarHorasPorActividad (ver Codigo.gs).

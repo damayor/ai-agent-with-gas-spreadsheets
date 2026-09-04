@@ -87,6 +87,105 @@ function actualizarHorasPorActividad() {
   hoja.getRange(`N17:N${tasksEndRow}`).setValues(mappedHours);
 }
 
+// ============================================================
+// Resumen de actividades de un día: cuenta tags distintos (no repetidos)
+// agrupados por color de celda, solo celdas no tachadas.
+//
+// IMPORTANTE: las columnas C-I son fijas por DÍA DE LA SEMANA (lunes-
+// domingo), no por fecha absoluta — no hay ninguna fecha escrita en la
+// hoja (confirmado con David). "día" acá solo determina qué día de la
+// semana mirar (mismo cálculo que calcularColumna en verbindung.gs), no
+// distingue una semana de otra.
+//
+// dia: Date opcional, default hoy. Para probar "ayer" pasar
+// new Date(Date.now() - 86400000).
+//
+// Por ahora solo imprime a consola (Ver > Registros) — todavía no envía
+// nada por Telegram, para poder revisar el resultado antes de conectarlo.
+// ============================================================
+function resumenDiaActividades(dia) {
+  const fecha = dia || new Date();
+  const hoja = SpreadsheetApp.openById(SPREADSHEET_ID).getSheets()[0];
+
+  const diaSemana = fecha.getDay(); // 0 domingo
+  const col = diaSemana === 0 ? 9 : diaSemana + 2; // misma fórmula que calcularColumna
+
+  const range = hoja.getRange(2, col, 48, 1); // C2:C49 de la columna del día
+  const valores = range.getValues().flat();
+  const backgrounds = range.getBackgrounds().flat();
+  const fontLines = range.getFontLines().flat();
+
+  // Tabla de referencia color → nombre de grupo (K/L/M17:39, ver aplicarFormatoCondicional).
+  // K contiene la lista completa de palabras clave separada por coma
+  // (ej. "zzz,siesta") — se usa solo la primera como nombre corto del grupo.
+  const tablaRef = hoja.getRange(`K17:K${tasksEndRow}`).getValues();
+  const listaColores = hoja.getRange(`M17:M${tasksEndRow}`).getValues();
+  const colorAGrupo = {};
+  for (let i = 0; i < listaColores.length; i++) {
+    const color = listaColores[i][0];
+    const palabras = tablaRef[i][0];
+    if (color && palabras) {
+      const primeraPalabra = palabras.toString().split(",")[0].trim();
+      colorAGrupo[color.toLowerCase()] = primeraPalabra;
+    }
+  }
+
+  const resumenPorColor = {}; // color -> Set de tags distintos
+  const primeraAparicion = {}; // color -> índice de fila (para orden cronológico)
+
+  for (let i = 0; i < valores.length; i++) {
+    const valor = String(valores[i]).trim();
+    const tachado = fontLines[i] === "line-through";
+
+    if (!valor || tachado) continue;
+
+    const color = backgrounds[i].toLowerCase();
+    // Tag = texto antes de "/2", "END" o ":MM"
+    const tagMatch = valor.match(/^(.*?)(?:\s+\/2|\s+END|\s+:\d)/);
+    const tag = tagMatch ? tagMatch[1].trim() : valor;
+
+    if (!resumenPorColor[color]) {
+      resumenPorColor[color] = new Set();
+      primeraAparicion[color] = i;
+    }
+    resumenPorColor[color].add(tag);
+  }
+
+  console.log(`=== Resumen del día (día semana ${diaSemana}, columna ${col}) ===`);
+
+  const colores = Object.keys(resumenPorColor);
+  const lineas = []; // texto plano, línea por grupo — reusado por Telegram (ver procesarUpdateTelegram)
+
+  if (colores.length === 0) {
+    console.log("Sin actividades registradas ese día.");
+    lineas.push("Sin actividades registradas ese día.");
+    return { resumenPorColor, lineas };
+  }
+
+  // Orden cronológico: el color cuyo primer bloque aparece más temprano va primero.
+  colores.sort((a, b) => primeraAparicion[a] - primeraAparicion[b]);
+
+  for (const color of colores) {
+    const tags = Array.from(resumenPorColor[color]).sort();
+    const grupo = colorAGrupo[color] || `Sin categoría (${color})`;
+    const linea = `${grupo}: ${tags.join(", ")}`;
+    console.log(linea);
+    lineas.push(linea);
+  }
+
+  return { resumenPorColor, lineas };
+}
+
+// Test: resumen de hoy
+function testResumenHoy() {
+  resumenDiaActividades();
+}
+
+// Test: resumen de ayer
+function testResumenAyer() {
+  resumenDiaActividades(new Date(Date.now() - 86400000));
+}
+
 //to use in Mobile
 function onEdit(e) {
   const rango = e.range;
