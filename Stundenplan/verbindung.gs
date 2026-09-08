@@ -242,6 +242,47 @@ function manejarComandoCalend(msgText, chatId) {
 }
 
 // ============================================================
+// Resumen nocturno automático — llama a manejarComandoCalend() con el
+// chat_id guardado (ver TELEGRAM_CHAT_ID en procesarUpdateTelegram), ya
+// que un trigger de tiempo no tiene chat_id propio. Requiere haber
+// mandado al menos un mensaje al bot antes (lo que sea) para que el
+// chat_id quede guardado.
+// ============================================================
+function enviarResumenNocturno() {
+  const chatId = PropertiesService.getScriptProperties().getProperty("TELEGRAM_CHAT_ID");
+
+  if (!chatId) {
+    console.error("enviarResumenNocturno: no hay TELEGRAM_CHAT_ID guardado — manda cualquier mensaje al bot primero.");
+    return;
+  }
+
+  manejarComandoCalend("/calend", chatId);
+}
+
+//Bug sigue mostrando agrupadas, 
+// Instalar el trigger diario a las 23:00 — CORRER UNA SOLA VEZ A MANO
+// desde el editor de Apps Script.
+function crearTriggerResumenNocturno() {
+  const yaExiste = ScriptApp.getProjectTriggers()
+    .some(t => t.getHandlerFunction() === "enviarResumenNocturno");
+
+  if (yaExiste) {
+    console.log("El trigger de resumen nocturno ya existe, no se crea otro.");
+    return;
+  }
+
+  ScriptApp.newTrigger("enviarResumenNocturno")
+    .timeBased()
+    .everyDays(1)
+    .atHour(23)
+    .nearMinute(0)
+    .inTimezone(Session.getScriptTimeZone())
+    .create();
+
+  console.log("Trigger creado: resumen nocturno diario a las 23:00.");
+}
+
+// ============================================================
 // Ruteo de update — usado tanto por doPost (histórico) como por
 // pollTelegram (mecanismo vigente, ver Polling.gs)
 // ============================================================
@@ -253,6 +294,14 @@ function procesarUpdateTelegram(update) {
   console.log("update_id:", updateId, "| chat_id:", chatId, "| texto:", msgText);
 
   if (!msgText) return;
+
+  // Guarda el chat_id del último mensaje recibido — lo necesita
+  // enviarResumenNocturno() (trigger de tiempo) para saber a quién
+  // mandarle el resumen, ya que un trigger de tiempo no tiene chat_id
+  // propio (no viene de un update de Telegram).
+  if (chatId) {
+    PropertiesService.getScriptProperties().setProperty("TELEGRAM_CHAT_ID", chatId.toString());
+  }
 
   // Comando /calend [ayer] — resumen del día por Telegram (ver
   // resumenDiaActividades en Codigo.gs). Sin argumento = hoy.

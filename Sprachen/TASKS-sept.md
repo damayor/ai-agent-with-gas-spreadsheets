@@ -167,6 +167,36 @@ A definir antes de programar:
   tocan la misma función de cálculo de fila destino, conviene
   revisarlas/diseñarlas juntas.
 
+## 10. Bug: al empezar un nuevo día, las columnas no arrancan alineadas en la misma fila
+
+**Urgencia: (a definir) — Dificultad: (a definir)**
+
+**NO DESARROLLAR AÚN.**
+
+`guardarPalabraSuelta` (Telegram.gs) resetea el puntero por columna de
+forma **independiente** (`propPunteroCol`, líneas ~308-313): al
+detectar que `fechaUltima !== hoy`, borra solo el puntero de la
+columna activa de ese mensaje, sin mirar el puntero de las demás
+columnas (B/E/I/L). Como cada columna puede tener distinta cantidad de
+filas escritas el día anterior, la primera palabra del día nuevo de
+cada columna puede terminar en una fila distinta — se ven tags de
+fecha repetidos (ej. "Fri 4") en filas distintas de la columna A en
+vez de una sola fila "cabecera" común para el día.
+
+Se pide: cuando se detecta cambio de día, calcular el **máximo**
+puntero/última-fila-con-dato entre las 4 columnas (B/E/I/L) de la hoja,
+y alinear el puntero de la columna que está escribiendo a esa fila
+máxima + 1, para que la fecha nueva en columna A quede visualmente
+marcando el inicio de una "tabla nueva" con todas las columnas
+arrancando en la misma fila.
+
+A definir antes de programar:
+- Cómo obtener el puntero/última fila de las columnas que **no** son
+  la activa en ese momento (leer sus `propPunteroCol` guardados, o
+  recalcular con el mismo escaneo hacia atrás que ya existe).
+- Relación con las tareas 8 y 9 (misma función de cálculo de fila
+  destino) — conviene diseñarlas juntas.
+
 ---
 
 ## Resumen de prioridad sugerida (por urgencia, luego dificultad ascendente)
@@ -179,3 +209,4 @@ A definir antes de programar:
 6. Tarea 2 — urgencia 2, dificultad 5 (bloqueada por definición de diseño)
 7. Tarea 8 — urgencia/dificultad a definir (no desarrollar aún)
 8. Tarea 9 — urgencia/dificultad a definir (no desarrollar aún; relacionada con tarea 8)
+9. Tarea 10 — urgencia/dificultad a definir (no desarrollar aún; relacionada con tareas 8 y 9)

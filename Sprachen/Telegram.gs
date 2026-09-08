@@ -265,6 +265,43 @@ const PROP_PUNTERO_COL = "PUNTERO_COL_";
 const CONFIG_OFFSET_DIA_HORAS = 2;  // Día comienza a las 2 AM
 const CONFIG_VALIDAR_PUNTERO_ATRAS = 10;  // Revisar máximo 10 filas hacia atrás
 
+// DEBUG TEMPORAL: colorea el borde inferior de la última celda escrita en
+// cada columna activa, para poder comparar visualmente si los punteros de
+// las distintas columnas quedan alineados en la misma fila o no.
+const DEBUG_COLOR_BORDE_POR_COL = {
+  2:  "#691ae8", // alle -> azul
+  12: "#a64d79", // verin -> violeta
+  5:  "#e69138", // b2 -> naranja
+  9:  "#38761d", // erin -> verde
+};
+
+// Recuerda la última celda marcada por hoja+columna para poder borrar
+// su borde antes de marcar la nueva (si no, quedan bordes viejos
+// duplicados en filas anteriores).
+const PROP_DEBUG_ULTIMA_CELDA = "DEBUG_ULTIMA_CELDA_";
+
+function marcarUltimaCeldaDebug(hoja, fila, col) {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const clave = `${PROP_DEBUG_ULTIMA_CELDA}${hoja.getName()}_${col}`;
+    const filaAnterior = parseInt(props.getProperty(clave) || "0");
+
+    if (filaAnterior && filaAnterior !== fila) {
+      hoja.getRange(filaAnterior, col).setBorder(
+        null, null, false, null, null, null
+      );
+    }
+
+    const color = DEBUG_COLOR_BORDE_POR_COL[col] || "#cc0000";
+    hoja.getRange(fila, col).setBorder(
+      null, null, true, null, null, null, color, SpreadsheetApp.BorderStyle.SOLID_THICK
+    );
+    props.setProperty(clave, String(fila));
+  } catch (e) {
+    // No romper el flujo principal si falla el formateo de debug.
+  }
+}
+
 function obtenerColActiva() {
   const clave = PropertiesService.getScriptProperties().getProperty(PROP_COL_ACTIVA) || COL_ACTIVA_DEFAULT;
   return CONFIG_COL_ACTIVA.find(c => c.prefijo === clave) || CONFIG_COL_ACTIVA[0];
@@ -305,19 +342,40 @@ function guardarPalabraSuelta(texto, cambioColActiva) {
     const propPunteroCol = `${PROP_PUNTERO_COL}${nombre}_${colInfo.col}`;
     const propFechaCol   = `${PROP_FECHA_ULTIMA}${nombre}_${colInfo.col}`;
 
-    // Si cambió el día, reiniciar puntero de esta columna
+    const maxRows = hoja.getMaxRows();
+
+    // Si cambió el día, alinear el puntero de TODAS las columnas activas
+    // (B/E/I/L) a la fila siguiente al máximo absoluto usado por
+    // cualquiera de ellas, para que la fila nueva del día quede como una
+    // "cabecera" común en vez de arrancar cada columna en una fila distinta.
     const fechaUltima = props.getProperty(propFechaCol);
     if (fechaUltima !== hoy) {
-      props.deleteProperty(propPunteroCol);
-      props.setProperty(propFechaCol, hoy);
+      let maxFilaConDato = 1; // fila 1 = header
+      for (const col of CONFIG_COL_ACTIVA) {
+        const valores = hoja.getRange(1, col.col, maxRows, 1).getValues();
+        for (let i = valores.length - 1; i >= 0; i--) {
+          if (valores[i][0].toString().trim()) {
+            if (i + 1 > maxFilaConDato) maxFilaConDato = i + 1;
+            break;
+          }
+        }
+      }
+      const filaNueva = maxFilaConDato + 1;
+      for (const col of CONFIG_COL_ACTIVA) {
+        props.setProperty(`${PROP_PUNTERO_COL}${nombre}_${col.col}`, String(filaNueva));
+        props.setProperty(`${PROP_FECHA_ULTIMA}${nombre}_${col.col}`, hoy);
+      }
     }
+    const huboCambioDeDia = fechaUltima !== hoy;
 
-    const maxRows     = hoja.getMaxRows();
-    let desde        = parseInt(props.getProperty(propPunteroCol) || "1");
+    let desde = parseInt(props.getProperty(propPunteroCol) || "1");
 
     // Validar el puntero: revisar si realmente es el último o hay huecos
-    // Mirar hacia atrás según CONFIG_VALIDAR_PUNTERO_ATRAS
-    if (desde > 1) {
+    // Mirar hacia atrás según CONFIG_VALIDAR_PUNTERO_ATRAS.
+    // Se omite justo después de un cambio de día: el puntero recién quedó
+    // alineado a una fila nueva y vacía, y mirar atrás metería datos del
+    // día anterior.
+    if (desde > 1 && !huboCambioDeDia) {
       const rango_check = Math.max(1, desde - CONFIG_VALIDAR_PUNTERO_ATRAS);
       const valores_check = hoja.getRange(rango_check, colInfo.col, desde - rango_check + 1, 1).getValues();
       let ultimo_encontrado = desde - 1;
@@ -357,6 +415,11 @@ function guardarPalabraSuelta(texto, cambioColActiva) {
 
     hoja.getRange(fila, colInfo.col).setValue(texto);
     props.setProperty(propPunteroCol, String(fila));
+
+    // DEBUG TEMPORAL: marcar visualmente la última celda escrita por columna,
+    // para verificar si los punteros de cada columna coinciden de fila.
+    marcarUltimaCeldaDebug(hoja, fila, colInfo.col);
+
     return { ok: true, hoja: nombre, fila, columna: colInfo.letra };
   } catch(err) {
     return { ok: false, mensaje: err.message };
@@ -666,6 +729,33 @@ function tick() {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ------------------------------------------------------------
+// DEBUG TEMPORAL: vuelca en Logger.log el estado actual de los
+// punteros/fechas por columna (B/E/I/L) de las hojas de palabra
+// suelta, para diagnosticar desalineaciones entre columnas al
+// cambiar de día. Correr a mano desde el editor de Apps Script.
+// ------------------------------------------------------------
+function debugPunterosPalabraSuelta() {
+  const props = PropertiesService.getScriptProperties();
+  const hojas = new Set(Object.values(CONFIG_MODO_PALABRA).map(c => c.hoja));
+
+  hojas.forEach(nombre => {
+    Logger.log(`--- Hoja: ${nombre} ---`);
+    CONFIG_COL_ACTIVA.forEach(col => {
+      const puntero = props.getProperty(`${PROP_PUNTERO_COL}${nombre}_${col.col}`);
+      const fecha   = props.getProperty(`${PROP_FECHA_ULTIMA}${nombre}_${col.col}`);
+      Logger.log(`  ${col.prefijo} (col ${col.letra}/${col.col}): puntero=${puntero} fechaUltima=${fecha}`);
+    });
+  });
+
+  const ahora = new Date();
+  const ahoraConZona = new Date(ahora.toLocaleString('en-US', { timeZone: ZONA_HORARIA }));
+  const horas = ahoraConZona.getHours();
+  const diaAjustado = horas < CONFIG_OFFSET_DIA_HORAS ? new Date(ahoraConZona.getTime() - 24*60*60*1000) : ahoraConZona;
+  const hoy = Utilities.formatDate(diaAjustado, "UTC", "yyyy-MM-dd");
+  Logger.log(`"Hoy" calculado (offset ${CONFIG_OFFSET_DIA_HORAS}h): ${hoy}`);
 }
 
 // ------------------------------------------------------------
