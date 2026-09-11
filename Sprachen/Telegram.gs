@@ -299,7 +299,111 @@ function marcarUltimaCeldaDebug(hoja, fila, col) {
     props.setProperty(clave, String(fila));
   } catch (e) {
     // No romper el flujo principal si falla el formateo de debug.
+    Logger.log(`marcarUltimaCeldaDebug: error en ${hoja.getName()} fila=${fila} col=${col}: ${e.message}`);
   }
+}
+
+// ------------------------------------------------------------
+// Alineación de punteros al empezar un día nuevo (2 AM), por hoja.
+// Recalcula, para las 4 columnas de datos (B/E/I/L), cuál es la
+// última fila realmente escrita, alinea TODOS los punteros a
+// "esa fila + 1" (la fila del día nuevo) y repinta el borde de
+// cada columna en su última celda con contenido real (no en la
+// fila nueva vacía). Así, aunque cada columna reciba su primera
+// palabra del día en momentos distintos, el índice de fila ya
+// queda fijado desde las 2 AM en vez de ir quedando desalineado
+// palabra a palabra (ver guardarPalabraSuelta).
+// ------------------------------------------------------------
+function alinearNuevoDiaHoja(spreadsheetId, nombreHoja) {
+  const ss   = SpreadsheetApp.openById(spreadsheetId);
+  const hoja = ss.getSheetByName(nombreHoja);
+  if (!hoja) throw new Error(`No existe la hoja ${nombreHoja}.`);
+
+  const props   = PropertiesService.getScriptProperties();
+  const maxRows = hoja.getMaxRows();
+
+  const ahora = new Date();
+  const ahoraConZona = new Date(ahora.toLocaleString('en-US', { timeZone: ZONA_HORARIA }));
+  const horas = ahoraConZona.getHours();
+  const diaAjustado = horas < CONFIG_OFFSET_DIA_HORAS ? new Date(ahoraConZona.getTime() - 24*60*60*1000) : ahoraConZona;
+  const hoy = Utilities.formatDate(diaAjustado, "UTC", "yyyy-MM-dd");
+
+  // Última fila con dato real, por columna, y el máximo absoluto entre
+  // las 4 (header = fila 1).
+  let maxFilaConDato = 1;
+  const ultimaFilaPorCol = {};
+  for (const col of CONFIG_COL_ACTIVA) {
+    const valores = hoja.getRange(1, col.col, maxRows, 1).getValues();
+    let ultima = 1;
+    for (let i = valores.length - 1; i >= 0; i--) {
+      if (valores[i][0].toString().trim()) { ultima = i + 1; break; }
+    }
+    ultimaFilaPorCol[col.col] = ultima;
+    if (ultima > maxFilaConDato) maxFilaConDato = ultima;
+  }
+
+  const filaNueva = maxFilaConDato + 1;
+  for (const col of CONFIG_COL_ACTIVA) {
+    props.setProperty(`${PROP_PUNTERO_COL}${nombreHoja}_${col.col}`, String(filaNueva));
+    props.setProperty(`${PROP_FECHA_ULTIMA}${nombreHoja}_${col.col}`, hoy);
+    // Repintar el borde en la fila nueva común (el índice compartido de
+    // hoy), no en la última celda con dato real de cada columna — así
+    // las 4 quedan visualmente alineadas en la misma fila aunque sus
+    // últimas palabras reales hayan quedado en filas distintas.
+    marcarUltimaCeldaDebug(hoja, filaNueva, col.col);
+  }
+
+  // Única fuente de la fecha en A: se escribe acá, tanto si dispara el
+  // trigger de las 2 AM como si dispara lazy desde guardarPalabraSuelta.
+  const fechaDisplay = Utilities.formatDate(diaAjustado, "UTC", "EEE d");
+  hoja.getRange(filaNueva, 1).setValue(fechaDisplay);
+
+  Logger.log(`alinearNuevoDiaHoja: ${nombreHoja} -> filaNueva=${filaNueva} (${hoy})`);
+  return { hoja: nombreHoja, filaNueva, hoy, ultimaFilaPorCol };
+}
+
+// Corre alinearNuevoDiaHoja para las 4 hojas de palabra suelta
+// (VHS_INPUT/VHS_OUTPUT/VKBLY_INPUT/VKBLY_OUTPUT). Pensado para
+// llamarse desde un trigger diario a las 2 AM.
+function alinearNuevoDiaTodasHojas() {
+  const vistos = new Set();
+  Object.values(CONFIG_MODO_PALABRA).forEach(config => {
+    const clave = `${config.spreadsheetId}_${config.hoja}`;
+    if (vistos.has(clave)) return;
+    vistos.add(clave);
+    try {
+      alinearNuevoDiaHoja(config.spreadsheetId, config.hoja);
+    } catch (e) {
+      Logger.log(`alinearNuevoDiaTodasHojas: error en ${config.hoja}: ${e.message}`);
+    }
+  });
+}
+
+// TESTEO: correr a mano desde el editor de Apps Script para probar
+// con una sola hoja antes de habilitar el trigger diario.
+function testAlinearNuevoDia() {
+  const resultado = alinearNuevoDiaHoja(ID_HOJA, "VHS_INPUT");
+  Logger.log(JSON.stringify(resultado, null, 2));
+}
+
+// Instalar el trigger diario — CORRER UNA SOLA VEZ A MANO, después
+// de validar con testAlinearNuevoDia().
+function crearTriggerAlinearNuevoDia() {
+  const yaExiste = ScriptApp.getProjectTriggers()
+    .some(function(t) { return t.getHandlerFunction() === "alinearNuevoDiaTodasHojas"; });
+
+  if (yaExiste) {
+    Logger.log("El trigger de alinearNuevoDiaTodasHojas ya existe, no se crea otro.");
+    return;
+  }
+  ScriptApp.newTrigger("alinearNuevoDiaTodasHojas")
+    .timeBased()
+    .atHour(CONFIG_OFFSET_DIA_HORAS)
+    .nearMinute(0)
+    .everyDays(1)
+    .inTimezone(ZONA_HORARIA)
+    .create();
+  Logger.log("Trigger creado: alinearNuevoDiaTodasHojas diario ~2 AM (Europe/Berlin).");
 }
 
 function obtenerColActiva() {
@@ -344,29 +448,16 @@ function guardarPalabraSuelta(texto, cambioColActiva) {
 
     const maxRows = hoja.getMaxRows();
 
-    // Si cambió el día, alinear el puntero de TODAS las columnas activas
-    // (B/E/I/L) a la fila siguiente al máximo absoluto usado por
-    // cualquiera de ellas, para que la fila nueva del día quede como una
-    // "cabecera" común en vez de arrancar cada columna en una fila distinta.
+    // Si cambió el día, delegar la alineación de TODAS las columnas
+    // activas (B/E/I/L) — punteros, fecha en A y bordes — a la misma
+    // función que usa el trigger de las 2 AM (alinearNuevoDiaHoja), así
+    // no hay dos lugares con lógica distinta para lo mismo. Esto es la
+    // red de seguridad lazy por si el trigger diario no llegó a correr.
     const fechaUltima = props.getProperty(propFechaCol);
-    if (fechaUltima !== hoy) {
-      let maxFilaConDato = 1; // fila 1 = header
-      for (const col of CONFIG_COL_ACTIVA) {
-        const valores = hoja.getRange(1, col.col, maxRows, 1).getValues();
-        for (let i = valores.length - 1; i >= 0; i--) {
-          if (valores[i][0].toString().trim()) {
-            if (i + 1 > maxFilaConDato) maxFilaConDato = i + 1;
-            break;
-          }
-        }
-      }
-      const filaNueva = maxFilaConDato + 1;
-      for (const col of CONFIG_COL_ACTIVA) {
-        props.setProperty(`${PROP_PUNTERO_COL}${nombre}_${col.col}`, String(filaNueva));
-        props.setProperty(`${PROP_FECHA_ULTIMA}${nombre}_${col.col}`, hoy);
-      }
-    }
     const huboCambioDeDia = fechaUltima !== hoy;
+    if (huboCambioDeDia) {
+      alinearNuevoDiaHoja(config.spreadsheetId, nombre);
+    }
 
     let desde = parseInt(props.getProperty(propPunteroCol) || "1");
 
@@ -407,8 +498,11 @@ function guardarPalabraSuelta(texto, cambioColActiva) {
 
     const fila = ultimaFilaConDato + 1;
 
-    // Si es la primera entrada del día en esta columna, escribir fecha en A
-    if (desde === 1 || !fechaUltima || fechaUltima !== hoy) {
+    // Caso borde: hoja sin ningún puntero inicializado todavía (nunca
+    // hubo cambio de día detectado porque nunca se guardó nada). La
+    // fecha en A del día en curso ya la escribió alinearNuevoDiaHoja
+    // arriba en el caso normal (huboCambioDeDia).
+    if (desde === 1 && !huboCambioDeDia) {
       const fechaDisplay = Utilities.formatDate(diaAjustado, "UTC", "EEE d");
       hoja.getRange(fila, 1).setValue(fechaDisplay);
     }
@@ -549,7 +643,14 @@ function guardarPalabras(datos) {
       hoja.getRange(nueva, 6).setValue(datos.idioma);
       return { ok: true, mensaje: "Fila nueva.", nueva: true };
     } else {
-      words.forEach((w, i) => hoja.getRange(fila, 3 + i).setValue(w));
+      const existentes = data[fila-1].slice(2, 5).map(v => (v||"").toString().trim());
+      const libres = [0,1,2].filter(i => !existentes[i]);
+
+      if (words.length > libres.length) {
+        return { ok: false, mensaje: `Ya hay ${3-libres.length} palabra(s) ese día. Quedan ${libres.length} lugar(es) libre(s).` };
+      }
+
+      words.forEach((w, i) => hoja.getRange(fila, 3 + libres[i]).setValue(w));
       hoja.getRange(fila, 6).setValue(datos.idioma);
       return { ok: true, mensaje: "Fila actualizada.", nueva: false };
     }

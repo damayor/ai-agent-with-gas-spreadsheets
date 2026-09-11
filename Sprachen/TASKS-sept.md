@@ -4,7 +4,7 @@ Nuevas features pedidas para la semana del 2026-09-01. Puntaje de
 **urgencia** (1-5, 5 = más urgente) y **dificultad** (1-5, 5 = más
 compleja) por tarea, para priorizar el orden de implementación.
 
-## 1. Separar ALEMÁN / INGLÉS: 4 modos de guardado
+## 1. Separar ALEMÁN / INGLÉS: 4 modos de guardado — ✅ IMPLEMENTADA
 
 **Urgencia: 4 — Dificultad: 4**
 
@@ -26,18 +26,28 @@ agrega vocabulario en inglés, en otro Spreadsheet
 - ID de columna en las hojas de inglés (¿misma estructura columna B
   que VHS_INPUT/OUTPUT, o distinta?).
 
-## 2. Resumen semanal + quiz
+## 2. Resumen semanal + quiz — 🔶 EN PROGRESO (versión sin IA)
 
-**Urgencia: 2 — Dificultad: 5 (a definir)**
+**Urgencia: 2 — Dificultad: 5**
 
-Idea: generar un resumen/quiz de las palabras de la semana (domingo a
-sábado, ventana desde las 3am del domingo, no medianoche), y dejar una
-línea en el Excel marcando el inicio de cada semana de evaluación.
+Probado en Telegram y funciona: llegan los polls tipo quiz y marca
+correcto/incorrecto solo. Implementado en `Quiz.gs`.
 
-**Queda pendiente de diseño** — no arrancar código todavía. Falta
-definir: trigger (comando manual vs automático), formato del quiz en
-Telegram, y el mecanismo exacto de la marca de "inicio de semana" en
-la hoja.
+**Cómo arma cada quiz:**
+- Rango = última marca "Mon &lt;día&gt;" en columna A hasta la fila previa
+  al siguiente "Mon" (o fin de datos). No se agregó marca nueva.
+- Vocab (B/C, E/F): solo palabras en negrilla, cursiva, con color de
+  fondo, o nivel "B2". Grammar (Q/R bug→fix, S/T to/-ing): cualquier
+  fila no vacía.
+- 10 preguntas, 4 opciones c/u (distractores al azar del mismo tipo).
+
+**Triggers agregados (falta correr una sola vez):** `quizSemanalDeutsch`
+(de-input + de-output) domingo 12:00, `quizSemanalEnglish` (en-input +
+en-output) jueves 12:00, ambos Europe/Berlin. Instalar corriendo
+`crearTriggersQuizSemanal()` una vez desde el editor de Apps Script.
+
+**Descartado por ahora:** redactar el quiz con la API de Claude
+(~$0.02-0.03/semana con Sonnet) — se puede retomar más adelante.
 
 ## 3. No mostrar traducción al reaccionar 👎/🤔 si el mensaje ya es la traducción
 
@@ -95,7 +105,11 @@ que ese día quedó vacío, para poder revisar los apuntes manualmente y
 confirmar que efectivamente no hubo palabras ese día (vs. un error de
 carga de datos).
 
-## 6. Ampliar la lista de días a recordar: también por meses
+**Estado:** parcialmente hecho — en `Repaso.gs:232` el caso
+`todas.length === 0` solo hace `Logger.log(...)`, todavía no manda el
+aviso por Telegram. Falta agregar el `enviarTelegram(...)` ahí.
+
+## 6. Ampliar la lista de días a recordar: también por meses — ✅ IMPLEMENTADA
 
 **Urgencia: 4 — Dificultad: 4**
 
@@ -110,11 +124,9 @@ mitades —
 Ambas mitades se combinan en un único array antes de buscar las
 palabras a repasar.
 
-## 8. Bug: el puntero de última fila no ve reubicaciones manuales
+## 8. Bug: el puntero de última fila no ve reubicaciones manuales — ✅ IMPLEMENTADA
 
 **Urgencia: (a definir) — Dificultad: (a definir)**
-
-**NO DESARROLLAR AÚN.**
 
 `guardarPalabraSuelta` (Telegram.gs) usa un puntero cacheado
 (`PUNTERO_FILA_<hoja>`) y busca la última fila con dato **desde ese
@@ -167,11 +179,9 @@ A definir antes de programar:
   tocan la misma función de cálculo de fila destino, conviene
   revisarlas/diseñarlas juntas.
 
-## 10. Bug: al empezar un nuevo día, las columnas no arrancan alineadas en la misma fila
+## 10. Bug: al empezar un nuevo día, las columnas no arrancan alineadas en la misma fila — ✅ IMPLEMENTADA
 
 **Urgencia: (a definir) — Dificultad: (a definir)**
-
-**NO DESARROLLAR AÚN.**
 
 `guardarPalabraSuelta` (Telegram.gs) resetea el puntero por columna de
 forma **independiente** (`propPunteroCol`, líneas ~308-313): al
@@ -197,16 +207,41 @@ A definir antes de programar:
 - Relación con las tareas 8 y 9 (misma función de cálculo de fila
   destino) — conviene diseñarlas juntas.
 
+**Implementación final:** `alinearNuevoDiaHoja(spreadsheetId, nombreHoja)`
+(Telegram.gs) — calcula la última fila real por columna (B/E/I/L), alinea
+los 4 punteros + fecha en A a "máximo + 1", y pinta el borde grueso de
+color de las 4 columnas en esa fila nueva común (no en la última celda
+con dato real de cada una). `guardarPalabraSuelta` delega ahí mismo
+cuando detecta cambio de día (red de seguridad lazy). Trigger diario:
+`alinearNuevoDiaTodasHojas()` corre esto para las 4 hojas
+(VHS_INPUT/OUTPUT, VKBLY_INPUT/OUTPUT) a las 2 AM Europe/Berlin, instalado
+con `crearTriggerAlinearNuevoDia()`. Testeo manual: `testAlinearNuevoDia()`.
+
+**A revisar:** el borde quedó pintado en el borde **inferior** de la
+celda de la fila nueva (línea gruesa de color abajo de esa celda). No
+confirmado si conviene mover a borde **superior** en su lugar —
+particularmente cuando el día ya tenía alguna palabra escrita antes de
+correr `testAlinearNuevoDia()` (probado un viernes 11 con datos ya
+cargados ese mismo día), para chequear si cambia la lectura visual.
+
 ---
 
 ## Resumen de prioridad sugerida (por urgencia, luego dificultad ascendente)
 
-1. Tarea 6 — urgencia 4, dificultad 4
-2. Tarea 1 — urgencia 4, dificultad 4
-3. Tarea 3 — urgencia 3, dificultad 2
-4. Tarea 5 — urgencia 3, dificultad 2
+1. Tarea 6 — urgencia 4, dificultad 4 (✅ implementada)
+2. Tarea 1 — urgencia 4, dificultad 4 (✅ implementada)
+3. Tarea 3 — urgencia 3, dificultad 2 (pendiente)
+4. Tarea 5 — urgencia 3, dificultad 2 (parcial — falta el envío a Telegram)
 5. Tarea 4+7 — urgencia 3, dificultad 3 (✅ implementada)
-6. Tarea 2 — urgencia 2, dificultad 5 (bloqueada por definición de diseño)
-7. Tarea 8 — urgencia/dificultad a definir (no desarrollar aún)
+6. Tarea 2 — urgencia 2, dificultad 5 (en progreso — `Quiz.gs`, falta trigger automático)
+7. Tarea 8 — urgencia/dificultad a definir (✅ implementada)
 8. Tarea 9 — urgencia/dificultad a definir (no desarrollar aún; relacionada con tarea 8)
-9. Tarea 10 — urgencia/dificultad a definir (no desarrollar aún; relacionada con tareas 8 y 9)
+9. Tarea 10 — urgencia/dificultad a definir (✅ implementada)
+
+La fecha la pone bien, pero sigue poniendo las palabras, mas arriba
+
+pongame siempre los bordes cuando se actualize siempre la fecha
+y actualiceme la fecha y los index y los bordes a las 2am de cada dia!
+
+
+heyy si pongo en nueva, me ssrcibe la que puse antes!
