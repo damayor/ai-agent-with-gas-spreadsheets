@@ -262,6 +262,10 @@ const COL_ACTIVA_DEFAULT = "alle";
 // fecha de último acceso. Cuando cambia el día, se reinician todos.
 const PROP_FECHA_ULTIMA = "FECHA_ULTIMA_";
 const PROP_PUNTERO_COL = "PUNTERO_COL_";
+// Fila desde la que arrancó el día actual (común a las 4 columnas).
+// Sirve de piso para que la validación "hacia atrás" del puntero nunca
+// cruce a filas de días anteriores (ver guardarPalabraSuelta).
+const PROP_FILA_INICIO_DIA = "FILA_INICIO_DIA_";
 const CONFIG_OFFSET_DIA_HORAS = 2;  // Día comienza a las 2 AM
 const CONFIG_VALIDAR_PUNTERO_ATRAS = 10;  // Revisar máximo 10 filas hacia atrás
 
@@ -287,14 +291,17 @@ function marcarUltimaCeldaDebug(hoja, fila, col) {
     const filaAnterior = parseInt(props.getProperty(clave) || "0");
 
     if (filaAnterior && filaAnterior !== fila) {
+      // Borra top Y bottom: limpia tanto el trazo del esquema actual
+      // como un posible bottom-border residual de una versión anterior
+      // del código (que marcaba el borde inferior en vez del superior).
       hoja.getRange(filaAnterior, col).setBorder(
-        null, null, false, null, null, null
+        false, null, false, null, null, null
       );
     }
 
     const color = DEBUG_COLOR_BORDE_POR_COL[col] || "#cc0000";
     hoja.getRange(fila, col).setBorder(
-      null, null, true, null, null, null, color, SpreadsheetApp.BorderStyle.SOLID_THICK
+      true, null, null, null, null, null, color, SpreadsheetApp.BorderStyle.SOLID_THICK
     );
     props.setProperty(clave, String(fila));
   } catch (e) {
@@ -343,6 +350,7 @@ function alinearNuevoDiaHoja(spreadsheetId, nombreHoja) {
   }
 
   const filaNueva = maxFilaConDato + 1;
+  props.setProperty(`${PROP_FILA_INICIO_DIA}${nombreHoja}`, String(filaNueva));
   for (const col of CONFIG_COL_ACTIVA) {
     props.setProperty(`${PROP_PUNTERO_COL}${nombreHoja}_${col.col}`, String(filaNueva));
     props.setProperty(`${PROP_FECHA_ULTIMA}${nombreHoja}_${col.col}`, hoy);
@@ -461,13 +469,19 @@ function guardarPalabraSuelta(texto, cambioColActiva) {
 
     let desde = parseInt(props.getProperty(propPunteroCol) || "1");
 
+    // Piso absoluto: la fila donde arrancó el día actual. La validación
+    // "hacia atrás" de abajo no puede cruzar este límite, porque más
+    // atrás hay datos de días anteriores (huecos legítimos de columnas
+    // que todavía no escribieron hoy, no punteros desincronizados).
+    const filaInicioDia = parseInt(props.getProperty(`${PROP_FILA_INICIO_DIA}${nombre}`) || "1");
+
     // Validar el puntero: revisar si realmente es el último o hay huecos
     // Mirar hacia atrás según CONFIG_VALIDAR_PUNTERO_ATRAS.
     // Se omite justo después de un cambio de día: el puntero recién quedó
     // alineado a una fila nueva y vacía, y mirar atrás metería datos del
     // día anterior.
     if (desde > 1 && !huboCambioDeDia) {
-      const rango_check = Math.max(1, desde - CONFIG_VALIDAR_PUNTERO_ATRAS);
+      const rango_check = Math.max(1, filaInicioDia, desde - CONFIG_VALIDAR_PUNTERO_ATRAS);
       const valores_check = hoja.getRange(rango_check, colInfo.col, desde - rango_check + 1, 1).getValues();
       let ultimo_encontrado = desde - 1;
 
@@ -478,7 +492,7 @@ function guardarPalabraSuelta(texto, cambioColActiva) {
           break;
         }
       }
-      desde = ultimo_encontrado + 1;
+      desde = Math.max(ultimo_encontrado + 1, filaInicioDia);
     }
 
     // Buscar última fila con dato EN ESTA COLUMNA ESPECÍFICA desde el desde ajustado
