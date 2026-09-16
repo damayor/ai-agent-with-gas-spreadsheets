@@ -5,7 +5,8 @@
 // bloque "/" desconocido de procesarUpdateTelegram):
 //   /nueva DD/MM, idioma, p1, p2, p3   (1 a 3 palabras, sin año)
 //   /ver DD/MM/YYYY
-//   /hoy
+//   /hoy idioma, p1, p2, p3    -> agrega a la fecha de hoy (como /nueva sin fecha)
+//   /ayer idioma, p1, p2, p3   -> agrega a la fecha de ayer (como /nueva sin fecha)
 //   /intervalos            -> muestra intervalos actuales
 //   /intervalos meses ...  / /intervalos dias ...  -> los cambia
 //   /intervalos meses reset / /intervalos dias reset
@@ -49,9 +50,19 @@ function procesarUpdateTelegram(update) {
   const chatId = msg.chat.id.toString();
   const texto  = msg.text.trim();
 
+  // Reply con al menos un "?" sobre un recordatorio de repaso -> mismo
+  // efecto que reaccionar 👎/🤔 (no se acordó ni con la frase). Se
+  // chequea antes que todo lo demás: un reply así no es ni comando ni
+  // palabra suelta nueva.
+  if (msg.reply_to_message && texto.includes("?")) {
+    procesarRespuestaConSignoPregunta(msg.reply_to_message.message_id);
+    return;
+  }
+
   if (texto.startsWith("/nueva"))            manejarNueva(chatId, texto);
   else if (texto.startsWith("/ver"))         manejarVer(chatId, texto);
-  else if (texto.startsWith("/hoy"))         manejarHoy(chatId);
+  else if (texto.startsWith("/hoy"))         manejarHoy(chatId, texto);
+  else if (texto.startsWith("/ayer"))        manejarAyer(chatId, texto);
   else if (texto.startsWith("/intervalos"))  manejarIntervalos(chatId, texto);
   else if (texto.startsWith("/modo"))        manejarModo(chatId, texto);
   else if (texto.startsWith("/")) {
@@ -61,8 +72,10 @@ function procesarUpdateTelegram(update) {
       "  Registra 1 a 3 palabras (Wort, C/D/E) para esa fecha en la hoja principal.\n\n" +
       "/ver <code>DD/MM/YYYY</code>\n" +
       "  Muestra las palabras y traducciones (spoiler) de esa fecha.\n\n" +
-      "/hoy\n" +
-      "  Igual que /ver, pero con la fecha de hoy.\n\n" +
+      "/hoy <code>idioma, p1, p2, p3</code>\n" +
+      "  Igual que /nueva, pero sin fecha: agrega a hoy.\n\n" +
+      "/ayer <code>idioma, p1, p2, p3</code>\n" +
+      "  Igual que /nueva, pero sin fecha: agrega a ayer.\n\n" +
       "/intervalos\n" +
       "  Muestra los intervalos de repaso actuales (meses y días).\n" +
       "/intervalos <code>meses 8 7 6 1</code>\n" +
@@ -78,11 +91,15 @@ function procesarUpdateTelegram(update) {
       "Texto libre (sin \"/\")\n" +
       "  Se guarda en la columna activa (default B, \"alle\") de la hoja del modo activo.\n" +
       "  Segundo parámetro opcional separado por coma para cambiar la columna activa (por prefijo, queda fijo hasta el próximo cambio):\n" +
-      "  <code>palabra, alle</code> (vuelve a B) · <code>palabra, b2</code> (a E) · <code>palabra, erin</code> (a I) · <code>palabra, verin</code> (a L)\n\n" +
+      "  <code>palabra, alle</code> (vuelve a B) · <code>palabra, b2</code> (a E) · <code>palabra, erin</code> (a I) · <code>palabra, verin</code> (a L)\n" +
+      "  Agregá <code>,tr</code> al final del mensaje para que te responda la traducción (GOOGLETRANSLATE) apenas esté lista:\n" +
+      "  <code>palabra,tr</code> · <code>palabra, erin,tr</code>\n\n" +
       "<b>Reacciones sobre un recordatorio de repaso</b> (Repaso.gs las procesa):\n" +
       "❤️  — sabías la palabra de memoria, sin leer la frase. Wort y Satz quedan en verde.\n" +
       "👍 / 👌  — te acordaste leyendo la frase de contexto. Wort en amarillo, Satz en verde.\n" +
-      "👎 / 🤔  — no la reconociste ni con la frase. Wort y Satz en amarillo, y te respondo con la traducción al español."
+      "👎 / 🤔  — no la reconociste ni con la frase. Wort y Satz en amarillo, y te respondo con la traducción al español.\n" +
+      "😡  — la frase de ejemplo no tiene nada que ver con la palabra (bug de contenido). Satz queda en rojo para revisar a mano.\n\n" +
+      "<b>Alternativa a 👎/🤔:</b> responder (reply) al recordatorio con un mensaje que tenga al menos un \"?\" tiene el mismo efecto."
     );
   }
   else {
@@ -92,7 +109,15 @@ function procesarUpdateTelegram(update) {
     // default: B (alle). Segundo parámetro opcional separado por coma
     // para cambiarla YA y de forma persistente: alle -> B, b2 -> E,
     // erin(ner) -> I, verin(nerlich) -> L.
-    const partes = texto.split(",").map(s => s.trim());
+    //
+    // Flag ",tr" al final del mensaje (con la coma incluida) pide la
+    // traducción de vuelta por Telegram apenas esté lista. Se detecta
+    // y se saca ANTES de partir por comas, para no correr el índice
+    // del segundo parámetro (columna activa).
+    const pideTraduccion = /,\s*tr\s*$/i.test(texto);
+    const textoSinFlag = pideTraduccion ? texto.replace(/,\s*tr\s*$/i, "") : texto;
+
+    const partes = textoSinFlag.split(",").map(s => s.trim());
     const palabra = partes[0];
     const cambioColActiva = partes[1];
     const res = guardarPalabraSuelta(palabra, cambioColActiva);
@@ -100,6 +125,10 @@ function procesarUpdateTelegram(update) {
       ? `📥 <b>${palabra}</b> en ${res.hoja} ${res.columna}${res.fila}.`
       : `❌ ${res.mensaje}`
     );
+
+    if (res.ok && pideTraduccion) {
+      responderTraduccionPalabraSuelta(chatId, res, palabra);
+    }
   }
 }
 
@@ -257,6 +286,15 @@ const CONFIG_COL_ACTIVA = [
   { prefijo: "verin", col: 12, letra: "L" },
 ];
 const COL_ACTIVA_DEFAULT = "alle";
+
+// Columna de traducción (fórmula GOOGLETRANSLATE) a la derecha de cada
+// columna de dato: B->C, E->F, I->J, L->M. Usado por el flag ",tr" que
+// pide la traducción de vuelta por Telegram (ver guardarPalabraSuelta).
+const COL_TRAD_POR_COL_DATO = { 2: 3, 5: 6, 9: 10, 12: 13 };
+
+// Segundos a esperar antes de leer la celda de traducción: le da tiempo
+// a GOOGLETRANSLATE (fórmula de hoja, no instantánea) a recalcular.
+const CONFIG_SEGUNDOS_ESPERA_TRADUCCION = 4;
 
 // Cada columna de datos tiene su propio puntero de fila y su propia
 // fecha de último acceso. Cuando cambia el día, se reinician todos.
@@ -528,10 +566,42 @@ function guardarPalabraSuelta(texto, cambioColActiva) {
     // para verificar si los punteros de cada columna coinciden de fila.
     marcarUltimaCeldaDebug(hoja, fila, colInfo.col);
 
-    return { ok: true, hoja: nombre, fila, columna: colInfo.letra };
+    return {
+      ok: true,
+      hoja: nombre,
+      fila,
+      columna: colInfo.letra,
+      spreadsheetId: config.spreadsheetId,
+      col: colInfo.col,
+    };
   } catch(err) {
     return { ok: false, mensaje: err.message };
   }
+}
+
+// ------------------------------------------------------------
+// Flag ",tr" en un mensaje de palabra suelta: espera unos segundos a
+// que GOOGLETRANSLATE recalcule la celda de traducción (columna a la
+// derecha de la columna de dato, ver COL_TRAD_POR_COL_DATO) y la
+// responde por Telegram.
+// ------------------------------------------------------------
+function responderTraduccionPalabraSuelta(chatId, res, palabra) {
+  const colTrad = COL_TRAD_POR_COL_DATO[res.col];
+  if (!colTrad) return;
+
+  Utilities.sleep(CONFIG_SEGUNDOS_ESPERA_TRADUCCION * 1000);
+
+  const ss    = SpreadsheetApp.openById(res.spreadsheetId);
+  const hoja  = ss.getSheetByName(res.hoja);
+  const trad  = hoja.getRange(res.fila, colTrad).getValue().toString().trim();
+
+  // La celda usa IFERROR(GOOGLETRANSLATE(...), "-"): "-" significa que
+  // la fórmula todavía no recalculó (o dio error), no que esté vacía.
+  const traduccionLista = trad && trad !== "-";
+  responderTelegram(chatId, traduccionLista
+    ? `🇪🇸 <b>${palabra}</b> → ${trad}`
+    : `🇪🇸 <b>${palabra}</b> → (traducción aún no lista, probá /ver más tarde)`
+  );
 }
 
 // ============================================================
@@ -552,12 +622,23 @@ function manejarNueva(chatId, texto) {
   }
 
   const fechaCorta = partes[0];
-  const idioma     = partes[1].toLowerCase();
-  const palabras   = partes.slice(2, 5);
-
   if (!fechaCorta.match(/^\d{2}\/\d{2}$/)) {
     responderTelegram(chatId, "⚠️ Fecha inválida. Formato: <code>DD/MM</code> (sin año, se usa el año actual)"); return;
   }
+
+  const anioActual = Utilities.formatDate(new Date(), ZONA_HORARIA, "yyyy");
+  const fecha = `${fechaCorta}/${anioActual}`;
+
+  agregarPalabrasFecha(chatId, fecha, partes.slice(1));
+}
+
+// Comparte la lógica de /nueva (parseo de idioma+palabras y guardado)
+// con /hoy y /ayer, que fijan la fecha automáticamente en vez de
+// pedirla como primer parámetro.
+function agregarPalabrasFecha(chatId, fecha, partesIdiomaPalabras) {
+  const idioma   = (partesIdiomaPalabras[0] || "").toLowerCase();
+  const palabras = partesIdiomaPalabras.slice(1, 4);
+
   if (!["de","en"].includes(idioma)) {
     responderTelegram(chatId, "⚠️ Idioma: <code>de</code> o <code>en</code>"); return;
   }
@@ -565,12 +646,8 @@ function manejarNueva(chatId, texto) {
     responderTelegram(chatId, "⚠️ Enviá entre 1 y 3 palabras."); return;
   }
 
-  const anioActual = Utilities.formatDate(new Date(), ZONA_HORARIA, "yyyy");
-  const fecha       = `${fechaCorta}/${anioActual}`;
-  const datos       = { fecha, idioma, palabras };
-
-  const res      = guardarPalabras(datos);
-  const bandera  = idioma === "en" ? "🇬🇧" : "🇩🇪";
+  const res     = guardarPalabras({ fecha, idioma, palabras });
+  const bandera = idioma === "en" ? "🇬🇧" : "🇩🇪";
 
   responderTelegram(chatId, res.ok
     ? `${res.nueva ? "✅ Fila nueva" : "✏️ Actualizada"} · ${fecha}\n\n` +
@@ -606,8 +683,46 @@ function manejarVer(chatId, texto) {
   );
 }
 
-function manejarHoy(chatId) {
-  manejarVer(chatId, "/ver " + Utilities.formatDate(new Date(), ZONA_HORARIA, "dd/MM/yyyy"));
+// ============================================================
+// Comandos /hoy y /ayer — igual que /nueva pero con la fecha fija
+// (hoy / ayer), sin tener que escribirla como primer parámetro.
+// Formato: /hoy idioma, p1, p2, p3   |   /ayer idioma, p1, p2, p3
+// ============================================================
+
+function manejarHoy(chatId, texto) {
+  const sinComando = texto.replace(/^\/hoy\s*/i, "").trim();
+  const partes = sinComando.split(",").map(s => s.trim()).filter(s => s.length > 0);
+
+  if (partes.length < 2) {
+    responderTelegram(chatId,
+      "⚠️ Formato:\n<code>/hoy idioma, p1, p2, p3</code>\n" +
+      "(entre 1 y 3 palabras)\n\n" +
+      "Ejemplo:\n<code>/hoy de, absolvieren, hingehen, ertragen</code>"
+    );
+    return;
+  }
+
+  const fecha = Utilities.formatDate(new Date(), ZONA_HORARIA, "dd/MM/yyyy");
+  agregarPalabrasFecha(chatId, fecha, partes);
+}
+
+function manejarAyer(chatId, texto) {
+  const sinComando = texto.replace(/^\/ayer\s*/i, "").trim();
+  const partes = sinComando.split(",").map(s => s.trim()).filter(s => s.length > 0);
+
+  if (partes.length < 2) {
+    responderTelegram(chatId,
+      "⚠️ Formato:\n<code>/ayer idioma, p1, p2, p3</code>\n" +
+      "(entre 1 y 3 palabras)\n\n" +
+      "Ejemplo:\n<code>/ayer de, absolvieren, hingehen, ertragen</code>"
+    );
+    return;
+  }
+
+  const ayer  = new Date(new Date().toLocaleString('en-US', { timeZone: ZONA_HORARIA }));
+  ayer.setDate(ayer.getDate() - 1);
+  const fecha = Utilities.formatDate(ayer, ZONA_HORARIA, "dd/MM/yyyy");
+  agregarPalabrasFecha(chatId, fecha, partes);
 }
 
 // ============================================================
@@ -762,7 +877,7 @@ function pollTelegram() {
 }
 
 // ------------------------------------------------------------
-// Reacciones nativas de Telegram (❤️/👍/👌/👎/🤔) sobre los mensajes
+// Reacciones nativas de Telegram (❤️/👍/👌/👎/🤔/😡) sobre los mensajes
 // de enviarRecordatorioHoy() (ver Repaso.gs):
 //   ❤️      -> sabía la palabra de memoria, sin leer la frase.
 //              Wort (C/D/E) Y Satz (K/L/M) verde.
@@ -771,14 +886,33 @@ function pollTelegram() {
 //   👎 / 🤔 -> no la entendió ni con el contexto de la frase.
 //              Wort Y Satz amarillo + responde con la traducción
 //              española (G/H/I).
+//   😡      -> la frase de ejemplo (Satz) no tiene nada que ver con
+//              la palabra en alemán (bug de contenido). Solo pinta
+//              Satz de rojo, sin tocar Wort ni responder nada.
 // ------------------------------------------------------------
 const VERDE_REACCION    = "#d9ead3";
 const AMARILLO_REACCION = "#fff2cc";
+const ROJO_REACCION     = "#ea9999";
 
 // col (3/4/5, índice de la palabra en C/D/E) -> índice de columna de
 // la frase (K/L/M) y de la traducción española (G/H/I).
 const COL_FRASE_POR_PALABRA = { 3: 11, 4: 12, 5: 13 };
 const COL_TRAD_POR_PALABRA  = { 3: 7,  4: 8,  5: 9  };
+
+// Reply con "?" sobre un recordatorio -> mismo efecto que la reacción
+// 👎/🤔 (aplicarEfectoNoSabe), pero disparado por texto en vez de por
+// reacción nativa de Telegram.
+function procesarRespuestaConSignoPregunta(messageId) {
+  const mapeo = obtenerMapeoReaccion(messageId);
+  if (!mapeo) {
+    Logger.log("procesarRespuestaConSignoPregunta: sin mapeo (vencido o inexistente) para message_id " + messageId);
+    return;
+  }
+
+  const ss   = SpreadsheetApp.openById(ID_HOJA);
+  const hoja = ss.getSheetByName(NOMBRE_TAB);
+  aplicarEfectoNoSabe(hoja, mapeo);
+}
 
 function procesarReaccionTelegram(messageReaction) {
   const messageId = messageReaction.message_id;
@@ -801,6 +935,7 @@ function procesarReaccionTelegram(messageReaction) {
   const esCorazon = emoji === "❤" || emoji === "❤️";
   const esOk      = emoji === "👍" || emoji === "👌";
   const esNoSabe  = emoji === "👎" || emoji === "🤔";
+  const esBugFrase = emoji === "😡";
 
   if (esCorazon) {
     hoja.getRange(mapeo.fila, mapeo.col).setBackground(VERDE_REACCION);
@@ -815,9 +950,12 @@ function procesarReaccionTelegram(messageReaction) {
   }
 
   if (esNoSabe) {
-    hoja.getRange(mapeo.fila, mapeo.col).setBackground(AMARILLO_REACCION);
-    hoja.getRange(mapeo.fila, colFrase).setBackground(AMARILLO_REACCION);
-    responderTraduccion(hoja, mapeo);
+    aplicarEfectoNoSabe(hoja, mapeo);
+    return;
+  }
+
+  if (esBugFrase) {
+    hoja.getRange(mapeo.fila, colFrase).setBackground(ROJO_REACCION);
     return;
   }
 
@@ -828,6 +966,17 @@ function responderTraduccion(hoja, mapeo) {
   const colTrad = COL_TRAD_POR_PALABRA[mapeo.col];
   const trad = hoja.getRange(mapeo.fila, colTrad).getValue().toString().trim();
   enviarTelegram(`🇪🇸 <b>${mapeo.orig}</b> → ${trad || "(sin traducción)"}`);
+}
+
+// Efecto de "no se acordó ni con la frase": Wort Y Satz en amarillo +
+// traducción española. Compartido entre la reacción 👎/🤔 y el
+// trigger equivalente por texto (reply con "?", ver
+// procesarRespuestaConSignoPregunta).
+function aplicarEfectoNoSabe(hoja, mapeo) {
+  const colFrase = COL_FRASE_POR_PALABRA[mapeo.col];
+  hoja.getRange(mapeo.fila, mapeo.col).setBackground(AMARILLO_REACCION);
+  hoja.getRange(mapeo.fila, colFrase).setBackground(AMARILLO_REACCION);
+  responderTraduccion(hoja, mapeo);
 }
 
 // ------------------------------------------------------------

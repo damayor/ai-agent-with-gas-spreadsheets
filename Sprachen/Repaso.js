@@ -495,3 +495,11 @@ function parsearFecha(celda) {
   }
   return null;
 }
+
+// function pegarFrasesSeptiembre() {
+//   const payload = {
+//     idioma: "de/en",
+//     // frases
+//   };
+//   pegarFrasesParametrizado(payload);
+// }

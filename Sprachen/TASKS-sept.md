@@ -144,12 +144,10 @@ A definir antes de programar: cuántas filas hacia atrás conviene
 revisar (¿un margen fijo, ej. 5-10 filas, o releer desde una fila fija
 más temprana?).
 
-## 9. Bug: fila guardada puede caer en la fila equivocada cerca de las 2 AM
+## 9. Bug: fila guardada puede caer en la fila equivocada cerca de las 2 AM — ✅ IMPLEMENTADA
 
 **Urgencia: (a definir) — Dificultad: (a definir)**
 revisa weil auf deutsch angebittet habe.
-
-**NO DESARROLLAR AÚN.**
 
 `guardarPalabraSuelta` (Telegram.gs) elige la fila de destino como la
 siguiente a la última fila con dato en B/E/I/L, sin ninguna noción de
@@ -217,12 +215,13 @@ cuando detecta cambio de día (red de seguridad lazy). Trigger diario:
 (VHS_INPUT/OUTPUT, VKBLY_INPUT/OUTPUT) a las 2 AM Europe/Berlin, instalado
 con `crearTriggerAlinearNuevoDia()`. Testeo manual: `testAlinearNuevoDia()`.
 
-**A revisar:** el borde quedó pintado en el borde **inferior** de la
-celda de la fila nueva (línea gruesa de color abajo de esa celda). No
-confirmado si conviene mover a borde **superior** en su lugar —
-particularmente cuando el día ya tenía alguna palabra escrita antes de
-correr `testAlinearNuevoDia()` (probado un viernes 11 con datos ya
-cargados ese mismo día), para chequear si cambia la lectura visual.
+**Corregido:** el borde se movió al **superior** de la celda de la fila
+nueva (antes quedaba en el inferior y dejaba una celda vacía de más
+antes del trazo). También se agregó `FILA_INICIO_DIA_<hoja>` como piso:
+la validación "hacia atrás" del puntero (tarea 8) ya no puede cruzar a
+filas de días anteriores al buscar un hueco — esto es lo que resolvía
+de fondo la tarea 9 (la fila podía "retroceder" al primer hueco viejo
+encontrado, mezclando palabras de días distintos cerca de las 2 AM).
 
 ---
 
@@ -235,13 +234,58 @@ cargados ese mismo día), para chequear si cambia la lectura visual.
 5. Tarea 4+7 — urgencia 3, dificultad 3 (✅ implementada)
 6. Tarea 2 — urgencia 2, dificultad 5 (en progreso — `Quiz.gs`, falta trigger automático)
 7. Tarea 8 — urgencia/dificultad a definir (✅ implementada)
-8. Tarea 9 — urgencia/dificultad a definir (no desarrollar aún; relacionada con tarea 8)
+8. Tarea 9 — urgencia/dificultad a definir (✅ implementada)
 9. Tarea 10 — urgencia/dificultad a definir (✅ implementada)
 
 La fecha la pone bien, pero sigue poniendo las palabras, mas arriba
 
 pongame siempre los bordes cuando se actualize siempre la fecha
 y actualiceme la fecha y los index y los bordes a las 2am de cada dia!
+
+## 11. Reacción 😡 cuando la frase no tiene nada que ver con la palabra — ✅ IMPLEMENTADA
+
+Nueva reacción sobre un recordatorio de repaso, junto a ❤️/👍/👌/👎/🤔:
+pinta solo la celda de la frase (Satz, columnas K/L/M) de rojo
+`#ea9999`, sin tocar Wort ni responder nada — es solo una marca visual
+para volver a revisar/corregir esa frase a mano.
+
+Implementado en `procesarReaccionTelegram` (Telegram.js).
+
+## 12. Traducción rápida con ",tr" al guardar palabra suelta — ✅ IMPLEMENTADA
+
+Flag `,tr` al final de un mensaje de palabra suelta (con la coma
+incluida, ej. `palabra,tr` o `palabra, erin,tr`) pide que el bot
+responda por Telegram con la traducción (columna GOOGLETRANSLATE a la
+derecha de la columna de dato: B→C, E→F, I→J, L→M) apenas esté
+calculada.
+
+Se detecta con una regex sobre el texto completo **antes** de partir
+por comas, para no correr el índice del segundo parámetro (columna
+activa). El bot espera `CONFIG_SEGUNDOS_ESPERA_TRADUCCION` (default 5s,
+parametrizable) con `Utilities.sleep` — bloqueante, aceptado porque el
+lapso es corto — y después lee la celda y responde con
+`<b>palabra</b> → traducción` (no solo la traducción sola, para poder
+distinguir varias pedidas seguidas). La celda usa
+`IFERROR(GOOGLETRANSLATE(...), "-")`: un valor `"-"` se trata como "aún
+no lista", no como traducción real.
+
+Implementado en `procesarUpdateTelegram` / `responderTraduccionPalabraSuelta`
+/ `COL_TRAD_POR_COL_DATO` / `CONFIG_SEGUNDOS_ESPERA_TRADUCCION` (Telegram.js).
+
+## 13. Reply con "?" como alternativa a la reacción 👎/🤔 — ✅ IMPLEMENTADA
+
+Mismo efecto que reaccionar 👎/🤔 sobre un recordatorio de repaso (Wort
+y Satz en amarillo + traducción al español), pero disparado
+respondiendo (reply) a ese mensaje con texto que contenga al menos un
+`"?"`. Útil cuando reaccionar con emoji no es cómodo.
+
+Se chequea en `procesarUpdateTelegram` antes que cualquier comando o el
+flujo de palabra suelta (un reply así no debe guardarse como palabra
+nueva). El efecto en sí se extrajo a `aplicarEfectoNoSabe(hoja, mapeo)`,
+compartido entre la reacción de emoji y este trigger por texto.
+
+Implementado en `procesarRespuestaConSignoPregunta` / `aplicarEfectoNoSabe`
+(Telegram.js).
 
 
 heyy si pongo en nueva, me ssrcibe la que puse antes!
