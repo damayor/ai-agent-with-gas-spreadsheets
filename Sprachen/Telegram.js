@@ -11,6 +11,8 @@
 //   /intervalos meses ...  / /intervalos dias ...  -> los cambia
 //   /intervalos meses reset / /intervalos dias reset
 //   /modo de input | de output | en input | en output
+//   /tr            -> muestra si el modo traducción está activo
+//   /tr on | off   -> lo enciende o apaga (persistente)
 //   (texto libre, sin "/")  -> se guarda como palabra suelta en la
 //   hoja (VHS_INPUT/VHS_OUTPUT/VKBLY INPUT/VKBLY OUTPUT) del modo activo,
 //   en la columna activa (default B / "alle").
@@ -59,13 +61,23 @@ function procesarUpdateTelegram(update) {
     return;
   }
 
-  if (texto.startsWith("/nueva"))            manejarNueva(chatId, texto);
-  else if (texto.startsWith("/ver"))         manejarVer(chatId, texto);
-  else if (texto.startsWith("/hoy"))         manejarHoy(chatId, texto);
-  else if (texto.startsWith("/ayer"))        manejarAyer(chatId, texto);
-  else if (texto.startsWith("/intervalos"))  manejarIntervalos(chatId, texto);
-  else if (texto.startsWith("/modo"))        manejarModo(chatId, texto);
-  else if (texto.startsWith("/")) {
+  // El ruteo se hace sobre una copia en minúsculas para aceptar el
+  // comando escrito con mayúsculas (/NUEVA, /Modo, /TR). A los
+  // handlers se les sigue pasando el texto original: ahí van las
+  // palabras a guardar, que sí distinguen mayúsculas (los
+  // sustantivos alemanes se escriben con mayúscula inicial).
+  // "/mode" es alias de "/modo".
+  const cmd = texto.toLowerCase();
+
+  if (cmd.startsWith("/nueva"))            manejarNueva(chatId, texto);
+  else if (cmd.startsWith("/ver"))         manejarVer(chatId, texto);
+  else if (cmd.startsWith("/hoy"))         manejarHoy(chatId, texto);
+  else if (cmd.startsWith("/ayer"))        manejarAyer(chatId, texto);
+  else if (cmd.startsWith("/intervalos"))  manejarIntervalos(chatId, texto);
+  else if (cmd.startsWith("/modo"))        manejarModo(chatId, texto);
+  else if (cmd.startsWith("/mode"))        manejarModo(chatId, texto.replace(/^\/mode/i, "/modo"));
+  else if (cmd.startsWith("/tr"))          manejarTr(chatId, texto);
+  else if (cmd.startsWith("/")) {
     responderTelegram(chatId,
       "🤖 <b>Comandos disponibles</b>\n\n" +
       "/nueva <code>DD/MM, idioma, p1, p2, p3</code>\n" +
@@ -87,13 +99,20 @@ function procesarUpdateTelegram(update) {
       "/modo\n" +
       "  Muestra el modo activo (idioma + dirección), la hoja destino y la columna activa.\n" +
       "/modo <code>de input</code> | <code>de output</code> | <code>en input</code> | <code>en output</code>\n" +
-      "  Define idioma y dirección del texto libre (sin \"/\") que mandes después.\n\n" +
+      "  Define idioma y dirección del texto libre (sin \"/\") que mandes después.\n" +
+      "  <code>/mode</code> funciona igual que <code>/modo</code>.\n\n" +
       "Texto libre (sin \"/\")\n" +
       "  Se guarda en la columna activa (default B, \"alle\") de la hoja del modo activo.\n" +
       "  Segundo parámetro opcional separado por coma para cambiar la columna activa (por prefijo, queda fijo hasta el próximo cambio):\n" +
       "  <code>palabra, alle</code> (vuelve a B) · <code>palabra, b2</code> (a E) · <code>palabra, erin</code> (a I) · <code>palabra, verin</code> (a L)\n" +
       "  Agregá <code>,tr</code> al final del mensaje para que te responda la traducción (GOOGLETRANSLATE) apenas esté lista:\n" +
-      "  <code>palabra,tr</code> · <code>palabra, erin,tr</code>\n\n" +
+      "  <code>palabra,tr</code> · <code>palabra, erin,tr</code>\n" +
+      "  El flag queda fijo: desde ahí todas las palabras vuelven con traducción hasta que mandes <code>/tr off</code>.\n\n" +
+      "/tr\n" +
+      "  Muestra si el modo traducción está activo.\n" +
+      "/tr <code>on</code> | <code>off</code>\n" +
+      "  Enciende o apaga el modo traducción persistente.\n\n" +
+      "<i>Los comandos también valen en mayúsculas: <code>/MODO</code>, <code>/Tr</code>, <code>/NUEVA</code>.</i>\n\n" +
       "<b>Reacciones sobre un recordatorio de repaso</b> (Repaso.gs las procesa):\n" +
       "❤️  — sabías la palabra de memoria, sin leer la frase. Wort y Satz quedan en verde.\n" +
       "👍 / 👌  — te acordaste leyendo la frase de contexto. Wort en amarillo, Satz en verde.\n" +
@@ -114,20 +133,31 @@ function procesarUpdateTelegram(update) {
     // traducción de vuelta por Telegram apenas esté lista. Se detecta
     // y se saca ANTES de partir por comas, para no correr el índice
     // del segundo parámetro (columna activa).
-    const pideTraduccion = /,\s*tr\s*$/i.test(texto);
-    const textoSinFlag = pideTraduccion ? texto.replace(/,\s*tr\s*$/i, "") : texto;
+    //
+    // El flag es persistente, igual que la columna activa: mandarlo una
+    // vez lo deja encendido para los mensajes siguientes, sin tener que
+    // repetirlo. Se apaga con /tr off (ver manejarTr).
+    const traeFlagTr = /,\s*tr\s*$/i.test(texto);
+    const textoSinFlag = traeFlagTr ? texto.replace(/,\s*tr\s*$/i, "") : texto;
+    if (traeFlagTr) guardarTraduccionActiva(true);
+    const pideTraduccion = traeFlagTr || obtenerTraduccionActiva();
 
     const partes = textoSinFlag.split(",").map(s => s.trim());
     const palabra = partes[0];
     const cambioColActiva = partes[1];
     const res = guardarPalabraSuelta(palabra, cambioColActiva);
-    responderTelegram(chatId, res.ok
-      ? `📥 <b>${palabra}</b> en ${res.hoja} ${res.columna}${res.fila}.`
-      : `❌ ${res.mensaje}`
-    );
 
-    if (res.ok && pideTraduccion) {
-      responderTraduccionPalabraSuelta(chatId, res, palabra);
+    if (!res.ok) {
+      responderTelegram(chatId, `❌ ${res.mensaje}`);
+      return;
+    }
+
+    const guardadoMsg = `📥 <b>${palabra}</b> en ${res.hoja} ${res.columna}${res.fila}.`;
+
+    if (pideTraduccion) {
+      responderTraduccionPalabraSuelta(chatId, res, palabra, guardadoMsg);
+    } else {
+      responderTelegram(chatId, guardadoMsg);
     }
   }
 }
@@ -228,7 +258,8 @@ function manejarModo(chatId, texto) {
     const colActiva = obtenerColActiva();
     responderTelegram(chatId,
       `🔧 Modo actual: <b>${actual}</b> (hoja <b>${CONFIG_MODO_PALABRA[actual].hoja}</b>)\n` +
-      `📌 Columna activa: <b>${colActiva.prefijo}</b> (columna <b>${colActiva.letra}</b>)\n\n` +
+      `📌 Columna activa: <b>${colActiva.prefijo}</b> (columna <b>${colActiva.letra}</b>)\n` +
+      `🌐 Modo traducción: <b>${obtenerTraduccionActiva() ? "ON" : "OFF"}</b>\n\n` +
       `Para cambiar el modo: <code>/modo de input</code>, <code>/modo de output</code>, ` +
       `<code>/modo en input</code> o <code>/modo en output</code>\n` +
       `Para cambiar la columna activa: mandá <code>palabra, alle|b2|erin|verin</code>`
@@ -251,6 +282,54 @@ function manejarModo(chatId, texto) {
 
   PropertiesService.getScriptProperties().setProperty(PROP_MODO_PALABRA, modo);
   responderTelegram(chatId, `✅ Modo cambiado a <b>${modo}</b>. El texto libre ahora se guarda en <b>${CONFIG_MODO_PALABRA[modo].hoja}</b>.`);
+}
+
+// ============================================================
+// Comando /tr — modo traducción persistente
+// ============================================================
+// El flag ",tr" al final de una palabra suelta enciende el modo y
+// queda fijo: todos los mensajes siguientes responden con la
+// traducción sin repetir el flag. Mismo criterio que la columna
+// activa (PROP_COL_ACTIVA). Se apaga con /tr off.
+
+const PROP_TRADUCCION_ACTIVA = "TRADUCCION_ACTIVA";
+
+function obtenerTraduccionActiva() {
+  return PropertiesService.getScriptProperties().getProperty(PROP_TRADUCCION_ACTIVA) === "1";
+}
+
+function guardarTraduccionActiva(activa) {
+  const props = PropertiesService.getScriptProperties();
+  if (activa) props.setProperty(PROP_TRADUCCION_ACTIVA, "1");
+  else props.deleteProperty(PROP_TRADUCCION_ACTIVA);
+}
+
+function manejarTr(chatId, texto) {
+  const arg = texto.replace(/^\/tr\s*/i, "").trim().toLowerCase();
+
+  if (!arg) {
+    const activa = obtenerTraduccionActiva();
+    responderTelegram(chatId,
+      `🌐 Modo traducción: <b>${activa ? "ON" : "OFF"}</b>\n\n` +
+      (activa
+        ? "Cada palabra suelta te vuelve con su traducción. Apagalo con <code>/tr off</code>."
+        : "Encendelo con <code>/tr on</code> o mandando <code>palabra,tr</code> una vez.")
+    );
+    return;
+  }
+
+  if (arg !== "on" && arg !== "off") {
+    responderTelegram(chatId, "⚠️ Usá <code>/tr on</code> o <code>/tr off</code>.");
+    return;
+  }
+
+  const activar = arg === "on";
+  guardarTraduccionActiva(activar);
+  responderTelegram(chatId,
+    activar
+      ? "🌐 Modo traducción <b>ON</b>. Cada palabra suelta vuelve con su traducción hasta que mandes <code>/tr off</code>."
+      : "🌐 Modo traducción <b>OFF</b>. Las palabras se guardan sin responder traducción."
+  );
 }
 
 // ------------------------------------------------------------
@@ -585,9 +664,12 @@ function guardarPalabraSuelta(texto, cambioColActiva) {
 // derecha de la columna de dato, ver COL_TRAD_POR_COL_DATO) y la
 // responde por Telegram.
 // ------------------------------------------------------------
-function responderTraduccionPalabraSuelta(chatId, res, palabra) {
+function responderTraduccionPalabraSuelta(chatId, res, palabra, guardadoMsg) {
   const colTrad = COL_TRAD_POR_COL_DATO[res.col];
-  if (!colTrad) return;
+  if (!colTrad) {
+    responderTelegram(chatId, guardadoMsg);
+    return;
+  }
 
   Utilities.sleep(CONFIG_SEGUNDOS_ESPERA_TRADUCCION * 1000);
 
@@ -598,10 +680,11 @@ function responderTraduccionPalabraSuelta(chatId, res, palabra) {
   // La celda usa IFERROR(GOOGLETRANSLATE(...), "-"): "-" significa que
   // la fórmula todavía no recalculó (o dio error), no que esté vacía.
   const traduccionLista = trad && trad !== "-";
-  responderTelegram(chatId, traduccionLista
+  const traduccionMsg = traduccionLista
     ? `🇪🇸 <b>${palabra}</b> → ${trad}`
-    : `🇪🇸 <b>${palabra}</b> → (traducción aún no lista, probá /ver más tarde)`
-  );
+    : `🇪🇸 <b>${palabra}</b> → (traducción aún no lista, prueba /ver más tarde)`;
+
+  responderTelegram(chatId, `${guardadoMsg}\n${traduccionMsg}`);
 }
 
 // ============================================================
