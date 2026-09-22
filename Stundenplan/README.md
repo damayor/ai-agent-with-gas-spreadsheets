@@ -1,5 +1,41 @@
 # Stundenplan — Telegram
 
+## Deploy con clasp (desde VSCode)
+
+El proyecto es **container-bound**: el script vive dentro de la hoja
+`StundenPlan der Woche` (`1fULXN0xEEM5gGVhuMwWK67fJqHAkUDdwI9EvwzNFtVs`), no es
+standalone. Por eso el `scriptId` no aparece en Drive ni en `clasp list-scripts`
+— hay que sacarlo del editor.
+
+El `scriptId` ya está configurado en `.clasp.json`.
+
+Comprobar qué se subiría antes de tocar nada:
+
+```bash
+clasp status     # debe listar appsscript.json, Código.js, Polling.js, verbindung.js
+```
+
+Subir cambios:
+
+```bash
+clasp push
+```
+
+Notas:
+
+- Los archivos locales son `.js` (y `Código.js` con tilde) porque así se llaman
+  en el editor — `clasp pull` los trae con el nombre remoto. No renombrarlos a
+  `.gs`: tener `verbindung.gs` y `verbindung.js` a la vez hace que clasp falle
+  con *"Conflicting files found"*.
+- `skipSubdirectories: true` mantiene `archive/` fuera del push; los `.md`
+  tampoco se suben (no están en `scriptExtensions`).
+- `clasp pull` **sobrescribe** los `.gs` locales con lo que haya en el editor.
+  Si se editó en ambos lados, revisar el diff antes de pushear.
+- Las credenciales (`TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`) viven en
+  *Propiedades del script*, no en el repo — `clasp push` no las toca.
+- El polling se apoya en triggers configurados en el editor; `clasp push` sube
+  código pero **no** crea ni modifica triggers.
+
 ## Cómo guardar una celda desde Telegram
 
 Se le manda un mensaje de texto al bot con el formato:
