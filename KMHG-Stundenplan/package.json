@@ -1,0 +1,12 @@
+{
+  "name": "kmhg-stundenplan",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "push": "tsc && cp appsscript.json dist/ && clasp push"
+  },
+  "devDependencies": {
+    "@types/google-apps-script": "latest",
+    "typescript": "latest"
+  }
+}
