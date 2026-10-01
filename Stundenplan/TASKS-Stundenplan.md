@@ -249,7 +249,7 @@ Preguntas #9-#11 ya respondidas — la tarea está lista para programar.
 11. Bloques anteriores a la hora del aviso: **se listan igual** — la
     agenda no arranca desde la hora actual.
 
-Vamos con tarea 1
+algo que permita decir, for the last hour or two blocks I worked on that, y me tagea los ultimos bloques ve... o X horas.
 
-Vuelvalo .js
-y que se pueda subir solito a GAS
+bug resumen nocturno por que no llego, quien me lo bloqueo?
+crearTriggerResumenNocturno

@@ -1,4 +1,5 @@
 const tasksEndRow = 40
+const projectsEndRow = 32
 const SPREADSHEET_ID = '1fULXN0xEEM5gGVhuMwWK67fJqHAkUDdwI9EvwzNFtVs';
 
 function limpiarCalendario() {
@@ -83,7 +84,6 @@ function actualizarHorasPorActividad() {
 
   console.log("backgrounds mappeados: ", mappedHours);
 
-  // 4. Escribir resultados de una vez (N2:N31)
   hoja.getRange(`N17:N${tasksEndRow}`).setValues(mappedHours);
 }
 
@@ -414,7 +414,7 @@ function updateTotalAmountHours() {
 
 //col starts en 1, no en 0
 function HORAS_LABORALES(activeSheet, columna, filaInicio, filaFin) {
-  var targetColors = activeSheet.getRange(`L22:L31`).getBackgrounds().flat();
+  var targetColors = activeSheet.getRange(`L22:L${projectsEndRow}`).getBackgrounds().flat();
   var arbeitColors = activeSheet.getRange(`L${tasksEndRow}`).getBackgrounds().flat();
 
   const range = activeSheet.getRange(filaInicio, columna, filaFin - filaInicio + 1, 1);
@@ -470,9 +470,9 @@ function distribuirProyectos() {
   // GUARDAR ESTADO ANTERIOR PARA DESHACER
   //guardarEstadoAnterior();
   
-  // 1. LEER PROYECTOS (filas 22-31)
+  // 1. LEER PROYECTOS (filas 22-${projectsEndRow})
   var proyectos = [];
-  var datosProyectos = hoja.getRange("K22:S31").getValues();
+  var datosProyectos = hoja.getRange(`K22:S${projectsEndRow}`).getValues();
   
   for (var i = 0; i < datosProyectos.length; i++) {
     var tags = datosProyectos[i][0]; // Columna K
@@ -699,7 +699,7 @@ function limpiarProyectos() {
   var valores = rango.getValues();
   
   // Leer nombres de proyectos
-  var datosProyectos = hoja.getRange("K22:K31").getValues();
+  var datosProyectos = hoja.getRange(`K22:K${projectsEndRow}`).getValues();
   var nombresProyectos = [];
   
   for (var i = 0; i < datosProyectos.length; i++) {

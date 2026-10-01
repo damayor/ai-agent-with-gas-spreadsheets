@@ -19,6 +19,10 @@
 //   Segundo parámetro opcional separado por coma para cambiar la
 //   columna activa (por prefijo, queda fijo hasta el próximo cambio):
 //   texto, alle -> B | texto, b2 -> E | texto, erin(ner) -> I | texto, verin(nerlich) -> L
+//   Hashtag opcional pegado al final del mensaje (sin coma), ej.
+//   "Tution, alle #TV" o "DatenBank #TI": se guarda en la columna de
+//   Tag a la izquierda de la columna de dato (B->A, E->D, I->H, L->K),
+//   como sufijo de lo que ya haya ahí (la fecha del día).
 //
 // Mecanismo de entrada vigente: pollTelegram() (más abajo), llamado
 // por tick() cada 1 minuto. El viejo webhook (doPost) sufría un 302
@@ -108,6 +112,8 @@ function procesarUpdateTelegram(update) {
       "  Agregá <code>,tr</code> al final del mensaje para que te responda la traducción (GOOGLETRANSLATE) apenas esté lista:\n" +
       "  <code>palabra,tr</code> · <code>palabra, erin,tr</code>\n" +
       "  El flag queda fijo: desde ahí todas las palabras vuelven con traducción hasta que mandes <code>/tr off</code>.\n\n" +
+      "  Hashtag opcional pegado al final del mensaje (sin coma) para etiquetar la palabra, ej. <code>Tution, alle #TV</code> o <code>DatenBank #TI</code>:\n" +
+      "  se guarda en la columna de Tag junto a la columna de dato (B→A, E→D, I→H, L→K).\n\n" +
       "/tr\n" +
       "  Muestra si el modo traducción está activo.\n" +
       "/tr <code>on</code> | <code>off</code>\n" +
@@ -142,10 +148,18 @@ function procesarUpdateTelegram(update) {
     if (traeFlagTr) guardarTraduccionActiva(true);
     const pideTraduccion = traeFlagTr || obtenerTraduccionActiva();
 
-    const partes = textoSinFlag.split(",").map(s => s.trim());
+    // Hashtag opcional (#TV, #TI, #B2, etc.) pegado al final del mensaje
+    // (sin coma), ej. "Tution, alle #TV" o "DatenBank #TI". Se saca
+    // ANTES de partir por comas, igual que el flag ",tr", para no
+    // correr el índice del segundo parámetro (columna activa).
+    const matchTag = textoSinFlag.match(REGEX_TAG_HASHTAG);
+    const tag = matchTag ? matchTag[1] : null;
+    const textoSinTag = matchTag ? textoSinFlag.slice(0, matchTag.index).trim() : textoSinFlag;
+
+    const partes = textoSinTag.split(",").map(s => s.trim());
     const palabra = partes[0];
     const cambioColActiva = partes[1];
-    const res = guardarPalabraSuelta(palabra, cambioColActiva);
+    const res = guardarPalabraSuelta(palabra, cambioColActiva, tag);
 
     if (!res.ok) {
       responderTelegram(chatId, `❌ ${res.mensaje}`);
@@ -366,6 +380,17 @@ const CONFIG_COL_ACTIVA = [
 ];
 const COL_ACTIVA_DEFAULT = "alle";
 
+// Columna de "Tag" (hashtag) a la izquierda de cada columna de dato:
+// B->A, E->D, I->H, L->K. Se llena con el hashtag opcional (#TV, #TI,
+// #B2, etc.) pegado al final de la palabra o del segundo parámetro,
+// sin coma (ej. "Tution, alle #TV"). Se detecta con
+// REGEX_TAG_HASHTAG, se saca del texto antes de guardarlo, y se
+// agrega como sufijo (separado por espacio) al valor que ya haya en
+// esa celda — típicamente la fecha del día escrita por
+// alinearNuevoDiaHoja/guardarPalabraSuelta.
+const COL_TAG_POR_COL_DATO = { 2: 1, 5: 4, 9: 8, 12: 11 };
+const REGEX_TAG_HASHTAG = /#(\S+)\s*$/;
+
 // Columna de traducción (fórmula GOOGLETRANSLATE) a la derecha de cada
 // columna de dato: B->C, E->F, I->J, L->M. Usado por el flag ",tr" que
 // pide la traducción de vuelta por Telegram (ver guardarPalabraSuelta).
@@ -536,7 +561,7 @@ function obtenerColActiva() {
   return CONFIG_COL_ACTIVA.find(c => c.prefijo === clave) || CONFIG_COL_ACTIVA[0];
 }
 
-function guardarPalabraSuelta(texto, cambioColActiva) {
+function guardarPalabraSuelta(texto, cambioColActiva, tag) {
   try {
     let colInfo;
     if (cambioColActiva) {
@@ -640,6 +665,19 @@ function guardarPalabraSuelta(texto, cambioColActiva) {
 
     hoja.getRange(fila, colInfo.col).setValue(texto);
     props.setProperty(propPunteroCol, String(fila));
+
+    // Hashtag opcional (#TV, #TI, #B2, etc.): se agrega como sufijo a
+    // lo que ya haya en la celda de Tag (columna a la izquierda de la
+    // columna de dato — ver COL_TAG_POR_COL_DATO), típicamente la
+    // fecha del día escrita por alinearNuevoDiaHoja.
+    if (tag) {
+      const colTag = COL_TAG_POR_COL_DATO[colInfo.col];
+      if (colTag) {
+        const celdaTag = hoja.getRange(fila, colTag);
+        const valorActual = celdaTag.getValue().toString().trim();
+        celdaTag.setValue(valorActual ? `${valorActual} #${tag}` : `${tag}`);
+      }
+    }
 
     // DEBUG TEMPORAL: marcar visualmente la última celda escrita por columna,
     // para verificar si los punteros de cada columna coinciden de fila.
