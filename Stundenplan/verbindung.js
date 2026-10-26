@@ -23,8 +23,8 @@ const TELEGRAM_FILA_BASE = 2;
 // bloque actual se interpreta como cierre del bloque ANTERIOR completo.
 // MARGEN_SALTO_SIGUIENTE_BLOQUE: mensaje (sin end) a N min o menos de
 // terminar el bloque actual salta directo al bloque siguiente.
-const MARGEN_CIERRE_BLOQUE_ANTERIOR = 7;
-const MARGEN_SALTO_SIGUIENTE_BLOQUE = 5;
+const MARGEN_CIERRE_BLOQUE_ANTERIOR = 3;
+const MARGEN_SALTO_SIGUIENTE_BLOQUE = 5; //meeh no se usa mucho...
 
 function calcularFila(date){
 
@@ -148,13 +148,19 @@ function procesarActividad(tag, isEnding = false, esMedioBloqueInput = false, ca
   const col = calcularColumna(adjusted);
 
   const filaUltima = row - offset;
-  const filaPrimera = Math.max(filaUltima - (cantidad - 1), TELEGRAM_FILA_BASE);
+  // cantidad puede traer .5 (ej. 2.5): se escriben ceil(cantidad) celdas y
+  // la más antigua (la primera) lleva "/2" -> GAS /2, GAS, GAS.
+  const hayMediaCelda = cantidad % 1 !== 0;
+  const celdas = Math.ceil(cantidad);
+  const filaPrimera = Math.max(filaUltima - (celdas - 1), TELEGRAM_FILA_BASE);
   if (filaUltima < TELEGRAM_FILA_BASE) {
     console.error("Offset fuera del día: no hay bloques que escribir.");
     return null;
   }
 
   const cell = sheet.getRange(filaPrimera, col, filaUltima - filaPrimera + 1, 1);
+  // La media celda solo aplica si no se recortó la primera por llegar a 00:00.
+  const primeraEsMedia = hayMediaCelda && !esMedioBloqueInput && (filaUltima - filaPrimera + 1) === celdas;
 
   const minutoTexto = (minutoReal < 10 ? "0" : "") + minutoReal;
   const valorCelda = esMedioBloqueInput
@@ -169,6 +175,9 @@ function procesarActividad(tag, isEnding = false, esMedioBloqueInput = false, ca
   // de lo planeado a inicio de semana (texto normal) en el mismo rango
   // de producción C2:I49.
   cell.setValue(valorCelda);
+  if (primeraEsMedia) {
+    sheet.getRange(filaPrimera, col).setValue(`${tag} /2 :${minutoTexto}`);
+  }
   cell.setFontWeight("bold");
   cell.setFontStyle("italic");
   cell.setFontLine("none"); // quita el tachado del planning para que sí sume en HORAS_LABORALES
@@ -445,8 +454,9 @@ function procesarUpdateTelegram(update) {
   let cantidad = 1;
   let offset = 0;
   for (const p of params) {
-    const mx = p.match(/^x(\d+)$/);
-    if (mx) cantidad = Math.max(1, Math.min(parseInt(mx[1], 10), 48));
+    const mx = p.match(/^x(\d+(?:\.\d+)?)$/);
+    // acepta decimales (x2.5; la coma separa params, solo punto), redondeados a múltiplos de 0.5
+    if (mx) cantidad = Math.max(0.5, Math.min(Math.round(parseFloat(mx[1]) * 2) / 2, 48));
     const mv = p.match(/^vor\s+(\d+)\s*b?$/);
     if (mv) offset = parseInt(mv[1], 10);
   }

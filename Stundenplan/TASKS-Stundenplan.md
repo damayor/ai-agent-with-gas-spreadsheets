@@ -263,3 +263,38 @@ crearTriggerResumenNocturno
   inmediato y la confirmación llega después; si hay un error hay que
   corregirlo a mano en la hoja. Evaluar preguntar por Telegram (ej. mostrar
   el rango `07:30-09:29` y esperar "ok") antes de escribir en el Spreadsheet.
+
+## Pendiente (futuro): reubicar planes tachados al escribir sobre ellos
+
+**Idea:** al escribir trabajo real (Telegram) sobre una celda que tiene un
+plan **tachado** (planeado pero tachado para que no sume), no perder esas
+horas: el plan desplazado se reubica para seguir cumpliendo las horas
+programadas al comienzo de la semana. El trabajo real queda sin tachar y
+sumando, como hoy.
+
+**Reglas acordadas:**
+- Tachado = plan que no se quiere sumar; es el que se reubica.
+- "Futuro" = solo celdas posteriores a hoy en la semana.
+- Los planes no suelen tener `+` ni `/2`; las celdas reales sí pueden.
+
+**Algoritmo (opción 2 primero, 1 de respaldo):**
+1. **Intercambio:** si se escribió el tag Y sobre el plan X, buscar en el
+   futuro un bloque planeado como Y (no tachado, no negrita/itálica = no
+   real) y poner ahí X. Conserva las horas de X y de Y.
+2. **Respaldo (opción 1):** si no hay bloque futuro de Y, mover X a un hueco
+   blanco (ej. viernes, sábado o domingo por la tarde).
+   - Sin decidir: ¿mover al hueco blanco o solo avisar por Telegram?
+3. La confirmación de Telegram debe decir adónde se movió X
+   (ej. "X movido a Vie 15:00").
+
+**Contar en horas, no en bloques coloreados:** un bloque completo = 0.5h,
+un `/2` = 0.25h. Con `/2`, el intercambio por bloque completo deja a Y
+0.25h por debajo de su plan.
+- **Opción B (elegida):** intercambiar siempre por bloque completo y
+  aceptar un desfase de 0.25h por cada `/2`. No hace falta ser estricto.
+- **Opción A (descartada por ahora):** contador de horas pendientes por tag
+  en Script Properties; intercambiar solo cuando las horas consumidas de Y
+  sumen 0.5h (ej. dos `/2`). Exacta, pero más compleja.
+
+**Relacionado:** igual que `xN`/`vor`, modifica la hoja sin confirmación
+previa; ver el pendiente "Confirmación antes de pintar".

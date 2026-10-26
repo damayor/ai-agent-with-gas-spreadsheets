@@ -116,6 +116,7 @@ Parámetros soportados: `/2`, `end` y el relleno hacia atrás `xN`. El mensaje s
 - `Tag, vor 1B` → 1 bloque, el previo al calculado ("hace 1 bloque" = 30 min atrás).
 - `Tag, x4, vor 1B` → 4 bloques que terminan un bloque antes del calculado, sin tocar el actual.
 - `vor` es independiente de `end`: `end` sigue decidiendo el bloque de anclaje y `vor` lo desplaza hacia atrás.
+- `Tag, x2.5` → decimales (múltiplos de 0.5, con punto): 3 celdas, la más antigua con `/2`: `Tag /2`, `Tag`, `Tag` (0.25h + 0.5h + 0.5h).
 - Máximo 48 bloques; se recorta en 00:00 (no pasa al día anterior). Sobrescribe lo que haya en esas celdas.
 - Se puede combinar: `Tag /2, end, x4, vor 1B`.
 
