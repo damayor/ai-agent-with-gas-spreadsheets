@@ -27,6 +27,31 @@ afectado).
 - **`TASKS.md`** / **`TASKS-sept.md`** — features pedidas, con puntaje de
   urgencia/dificultad para priorizar el orden de implementación.
 
+## Desplegar cambios a Apps Script (clasp)
+
+El código vive en este repo y se sube al proyecto de Apps Script con
+[clasp](https://github.com/google/clasp). `.clasp.json` (con el `scriptId`)
+está en `.gitignore`; si falta en una máquina nueva: `clasp clone <scriptId>`.
+
+```
+cd Sprachen
+clasp push        # sube los .js (como .gs) y appsscript.json
+```
+
+- **Primera vez en una máquina:** `clasp login` (guarda credenciales en
+  `~/.clasprc.json`, nunca se sube al repo).
+- `clasp push` **sobrescribe** lo que haya en el editor online. Si editaste
+  algo allá, primero `clasp pull` y revisa el diff.
+- Solo se suben `.js`/`.gs`, `.html` y `appsscript.json`; los `.md` no.
+- `clasp push` **no** toca las Propiedades del script (`TELEGRAM_TOKEN`,
+  `CF_D1_TOKEN`, punteros…) ni los triggers. Esos se configuran a mano en
+  el editor (Configuración del proyecto / ícono del reloj ⏰).
+- **Funciones nuevas que hay que correr una vez a mano** desde el editor
+  (dropdown de funciones → ▶ Ejecutar), según el cambio: `prepararBdFehler()`,
+  `crearTriggerFehler()`, `crearTriggerTick()`, etc. Si usan un servicio
+  nuevo (ej. `UrlFetchApp`), la primera ejecución pide autorizar permisos.
+- Revisa el resultado en Ver → Registros (o Ejecuciones).
+
 ## Mecanismo de entrada: polling (no webhook)
 
 El bot usa **polling**, no `doPost`/webhook. `tick()` es el handler de un
