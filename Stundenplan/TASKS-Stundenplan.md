@@ -253,3 +253,13 @@ algo que permita decir, for the last hour or two blocks I worked on that, y me t
 
 bug resumen nocturno por que no llego, quien me lo bloqueo?
 crearTriggerResumenNocturno
+## Pendientes (relleno `xN` / `vor MB` y multi-tag `+`)
+
+- **Dudar de `end` vs `vor`:** la ventana de 7 min de `end`
+  (`MARGEN_CIERRE_BLOQUE_ANTERIOR`) confunde. Evaluar eliminar `end` y dejar
+  solo `vor` (ej. `Tag, vor 1B` en vez de `Tag, end`). Por ahora se deja
+  `end` como está; con `end` + `vor` los desplazamientos se suman.
+- **Confirmación antes de pintar:** hoy `Tag, x4, vor 1B` escribe de
+  inmediato y la confirmación llega después; si hay un error hay que
+  corregirlo a mano en la hoja. Evaluar preguntar por Telegram (ej. mostrar
+  el rango `07:30-09:29` y esperar "ok") antes de escribir en el Spreadsheet.

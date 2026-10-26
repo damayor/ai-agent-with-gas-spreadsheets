@@ -108,4 +108,17 @@ Nota: las columnas C-I son fijas por día de la semana (sin fecha real escrita e
 
 ## Otros tags a tener en cuenta
 
-Aparte de `/2` y `end`, no hay más parámetros soportados. El mensaje se parsea como `Tag[ /2][, param]`; cualquier texto en `param` que no sea exactamente `end` (sin distinguir mayúsculas/minúsculas) se ignora silenciosamente.
+Parámetros soportados: `/2`, `end` y el relleno hacia atrás `xN`. El mensaje se parsea como `Tag[ /2][, end][, xN][, vor MB]`; cualquier otro texto en un `param` se ignora silenciosamente.
+
+### Relleno hacia atrás: `xN` y `vor MB`
+
+- `Tag, x4` → escribe `Tag` en 4 bloques consecutivos que terminan en el bloque calculado (el actual, o el anterior con `end`): las últimas 2:00.
+- `Tag, vor 1B` → 1 bloque, el previo al calculado ("hace 1 bloque" = 30 min atrás).
+- `Tag, x4, vor 1B` → 4 bloques que terminan un bloque antes del calculado, sin tocar el actual.
+- `vor` es independiente de `end`: `end` sigue decidiendo el bloque de anclaje y `vor` lo desplaza hacia atrás.
+- Máximo 48 bloques; se recorta en 00:00 (no pasa al día anterior). Sobrescribe lo que haya en esas celdas.
+- Se puede combinar: `Tag /2, end, x4, vor 1B`.
+
+## Varios tags en una celda: `+`
+
+`CHK/2 + Verkauf/2` cuenta cada parte por separado, con el color de SU palabra clave (tabla K/L17:40, primera fila que matchee), no solo el color de fondo de la celda (el formato condicional pinta solo un color por celda). Cada parte lleva su propio `/2`: sin `/2` = bloque completo. Aplica a `actualizarHorasPorActividad`, `HORAS_LABORALES` y `/calend`.

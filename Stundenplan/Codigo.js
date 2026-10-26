@@ -11,6 +11,55 @@ function limpiarCalendario() {
   SpreadsheetApp.getUi().alert('✅ Calendario limpiado!');
 }
 
+// ============================================================
+// Celdas con varios tags: "CHK/2 + Verkauf/2".
+// El formato condicional solo pinta UN color por celda (gana la primera
+// regla que matchea), así que contar por color ignoraba los tags
+// posteriores al primero. Para celdas con "+" se cuenta cada parte por
+// separado, buscando su color en la tabla K/L17:40 con las mismas
+// palabras clave del formato condicional.
+// ============================================================
+
+// Tabla de referencia: [{regexes, color}] en el mismo orden que las reglas
+// del formato condicional (la primera que matchea gana).
+function leerTablaTagColor(hoja) {
+  const palabras = hoja.getRange(`K17:K${tasksEndRow}`).getValues();
+  const colores = hoja.getRange(`L17:L${tasksEndRow}`).getBackgrounds();
+  const tabla = [];
+  for (let i = 0; i < palabras.length; i++) {
+    if (!palabras[i][0]) continue;
+    const regexes = [];
+    String(palabras[i][0]).split(",").forEach(p => {
+      const k = p.trim().toLowerCase();
+      if (!k) return;
+      try { regexes.push(new RegExp(k)); } catch (e) { /* palabra clave inválida: se ignora */ }
+    });
+    tabla.push({ regexes, color: colores[i][0].toLowerCase() });
+  }
+  return tabla;
+}
+
+function colorDeTag(tag, tabla) {
+  const t = tag.toLowerCase();
+  for (const fila of tabla) {
+    if (fila.regexes.some(r => r.test(t))) return fila.color;
+  }
+  return null;
+}
+
+// "CHK/2 + Verkauf /2 :05" -> [{tag:"CHK", mitad:true}, {tag:"Verkauf", mitad:true}]
+// Cada parte lleva su propio "/2"; ":MM" y "END" se descartan.
+function partesDeCelda(valor) {
+  return String(valor).split("+").map(p => p.trim()).filter(p => p).map(p => ({
+    mitad: p.includes("/2"),
+    tag: p.replace(/\/2/g, "").replace(/\s+:\d+\s*$/, "").replace(/\s+END\b/i, "").trim()
+  }));
+}
+
+function esCeldaMultiTag(valor) {
+  return String(valor).includes("+");
+}
+
 function aplicarFormatoCondicional() {
   var hoja = SpreadsheetApp.getActiveSheet();
   var reglas = [];
@@ -59,6 +108,7 @@ function actualizarHorasPorActividad() {
   console.log("fontLines", fontLines);
 
   const conteo = {};
+  const tablaTagColor = leerTablaTagColor(hoja);
 
   // 1. Contar todos los backgrounds en una sola pasada
   // Ticket #8: celdas escritas vía Telegram con sufijo "/2" cuentan
@@ -67,7 +117,15 @@ function actualizarHorasPorActividad() {
 
       const color = backgrounds[i];
       const tachado = fontLines[i] === "line-through";
-      if (!tachado) {
+      if (tachado) continue;
+
+      if (esCeldaMultiTag(valores[i])) {
+        // "A + B": cada tag suma a SU color (no solo al de fondo de la celda)
+        for (const parte of partesDeCelda(valores[i])) {
+          const colorParte = colorDeTag(parte.tag, tablaTagColor) || color;
+          conteo[colorParte] = (conteo[colorParte] || 0) + (parte.mitad ? 0.5 : 1);
+        }
+      } else {
         const esMedioBloque = String(valores[i]).includes("/2");
         conteo[color] = (conteo[color] || 0) + (esMedioBloque ? 0.5 : 1);
       }
@@ -130,6 +188,7 @@ function resumenDiaActividades(dia) {
     }
   }
 
+  const tablaTagColor = leerTablaTagColor(hoja);
   const resumenPorColor = {}; // color -> Set de tags distintos
   const primeraAparicion = {}; // color -> índice de fila (para orden cronológico)
 
@@ -140,6 +199,19 @@ function resumenDiaActividades(dia) {
     if (!valor || tachado) continue;
 
     const color = backgrounds[i].toLowerCase();
+
+    if (esCeldaMultiTag(valor)) {
+      for (const parte of partesDeCelda(valor)) {
+        const colorParte = colorDeTag(parte.tag, tablaTagColor) || color;
+        if (!resumenPorColor[colorParte]) {
+          resumenPorColor[colorParte] = new Set();
+          primeraAparicion[colorParte] = i;
+        }
+        resumenPorColor[colorParte].add(parte.tag);
+      }
+      continue;
+    }
+
     // Tag = texto antes de "/2", "END" o ":MM"
     const tagMatch = valor.match(/^(.*?)(?:\s+\/2|\s+END|\s+:\d)/);
     const tag = tagMatch ? tagMatch[1].trim() : valor;
@@ -425,10 +497,19 @@ function HORAS_LABORALES(activeSheet, columna, filaInicio, filaFin) {
   console.log("backgrounds", arbeitColors);
 
   let totalHoras = 0;
+  const tablaTagColor = leerTablaTagColor(activeSheet);
 
   for (let i = 0; i < backgrounds.length; i++) {
     const color = backgrounds[i];
     const tachado = fontLines[i] === "line-through";
+    if (!tachado && esCeldaMultiTag(valores[i])) {
+      // "A + B": cada parte cuenta si SU color es laboral
+      for (const parte of partesDeCelda(valores[i])) {
+        const colorParte = colorDeTag(parte.tag, tablaTagColor) || color.toLowerCase();
+        if (targetColors.includes(colorParte)) totalHoras += parte.mitad ? 1 : 2;
+      }
+      continue;
+    }
     if (targetColors.includes(color.toLowerCase()) && !tachado) {
       // Ticket #8: celdas escritas vía Telegram con sufijo "/2" (ver
       // procesarActividad en verbindung.gs) marcan que el mensaje llegó

@@ -74,7 +74,13 @@ function testCelda(tag) {
 //     (o salta al siguiente si llega en el margen de cierre del bloque,
 //     MARGEN_SALTO_SIGUIENTE_BLOQUE, para no pisar un bloque que ya casi
 //     terminó).
-function procesarActividad(tag, isEnding = false, esMedioBloqueInput = false){
+//
+// Relleno hacia atrás (cantidad/offset): el mismo valor se escribe en
+// "cantidad" bloques consecutivos que terminan en el bloque calculado
+// arriba, desplazado "offset" bloques hacia atrás. Ej. cantidad=4 ->
+// bloque calculado + los 3 anteriores (últimos 2:00); offset=1 -> el
+// rango termina en el bloque previo al actual. Se recorta en 00:00.
+function procesarActividad(tag, isEnding = false, esMedioBloqueInput = false, cantidad = 1, offset = 0){
 
   const sheet = SpreadsheetApp
     .openById(SPREADSHEET_ID)
@@ -141,16 +147,22 @@ function procesarActividad(tag, isEnding = false, esMedioBloqueInput = false){
   const row = calcularFila(adjusted);
   const col = calcularColumna(adjusted);
 
-  const cell = sheet.getRange(row, col);
+  const filaUltima = row - offset;
+  const filaPrimera = Math.max(filaUltima - (cantidad - 1), TELEGRAM_FILA_BASE);
+  if (filaUltima < TELEGRAM_FILA_BASE) {
+    console.error("Offset fuera del día: no hay bloques que escribir.");
+    return null;
+  }
+
+  const cell = sheet.getRange(filaPrimera, col, filaUltima - filaPrimera + 1, 1);
 
   const minutoTexto = (minutoReal < 10 ? "0" : "") + minutoReal;
   const valorCelda = esMedioBloqueInput
     ? `${tag} /2 :${minutoTexto}`
     : `${tag} :${minutoTexto}`;
 
-  console.log("Escribiendo en celda", cell.getA1Notation(),
-    "(fila", row, "col", col, ") — día:", adjusted.getDay(),
-    "hora ajustada:", Utilities.formatDate(adjusted, Session.getScriptTimeZone(), "HH:mm"),
+  console.log("Escribiendo en rango", cell.getA1Notation(),
+    "(filas", filaPrimera, "-", filaUltima, "col", col, ") — día:", adjusted.getDay(),
     "| valor:", valorCelda);
 
   // Negrilla + itálica: distingue lo escrito vía Telegram (tiempo real)
@@ -163,17 +175,20 @@ function procesarActividad(tag, isEnding = false, esMedioBloqueInput = false){
 
   console.log("Escritura confirmada en", cell.getA1Notation());
 
-  // Rango de minutos del bloque de 30 min en el que quedó escrita la celda,
-  // para poder informarlo en la confirmación de Telegram.
-  const minutoInicioBloque = adjusted.getMinutes();
-  const minutoFinBloque = minutoInicioBloque + 29;
-  const horaTexto = (adjusted.getHours() < 10 ? "0" : "") + adjusted.getHours();
-  const rangoBloqueTexto = `${horaTexto}:${(minutoInicioBloque < 10 ? "0" : "") + minutoInicioBloque}-${horaTexto}:${minutoFinBloque}`;
+  // Rango horario cubierto (inicio del primer bloque - fin del último),
+  // para informarlo en la confirmación de Telegram.
+  const textoHora = (idx, finDeBloque) => {
+    const h = Math.floor(idx / 2);
+    const m = (idx % 2) * 30 + (finDeBloque ? 29 : 0);
+    return `${h < 10 ? "0" : ""}${h}:${m < 10 ? "0" : ""}${m}`;
+  };
+  const rangoBloqueTexto = `${textoHora(filaPrimera - TELEGRAM_FILA_BASE, false)}-${textoHora(filaUltima - TELEGRAM_FILA_BASE, true)}`;
 
   return {
     celda: cell.getA1Notation(),
     rangoBloque: rangoBloqueTexto,
-    esMedioBloque: esMedioBloqueInput
+    esMedioBloque: esMedioBloqueInput,
+    bloques: filaUltima - filaPrimera + 1
   };
 }
 
@@ -416,24 +431,36 @@ function procesarUpdateTelegram(update) {
     return;
   }
 
-  // Formato: "Tag[ /2][, end]". El "/2" es siempre explícito (input del
+  // Formato: "Tag[ /2][, end][, xN][, vor MB]". El "/2" es siempre explícito (input del
   // usuario, ver Ticket #12) — nunca se infiere del minuto de llegada.
   const parts = msgText.split(",").map(p => p.trim());
   const primeraParteRaw = parts[0];
   const esMedioBloqueInput = /\/2\s*$/.test(primeraParteRaw);
   const tag = primeraParteRaw.replace(/\/2\s*$/, "").trim();
-  const isEnding = parts[1]?.toLowerCase() === "end";
+  const params = parts.slice(1).map(p => p.toLowerCase());
+  const isEnding = params.includes("end");
 
-  console.log("tag:", tag, "| isEnding:", isEnding, "| esMedioBloqueInput:", esMedioBloqueInput);
+  // Relleno hacia atrás: "xN" = N bloques que terminan en el bloque
+  // calculado; "vor MB" = ese rango termina M bloques (B) antes (offset).
+  let cantidad = 1;
+  let offset = 0;
+  for (const p of params) {
+    const mx = p.match(/^x(\d+)$/);
+    if (mx) cantidad = Math.max(1, Math.min(parseInt(mx[1], 10), 48));
+    const mv = p.match(/^vor\s+(\d+)\s*b?$/);
+    if (mv) offset = parseInt(mv[1], 10);
+  }
 
-  const resultado = procesarActividad(tag, isEnding, esMedioBloqueInput);
+  console.log("tag:", tag, "| isEnding:", isEnding, "| esMedioBloqueInput:", esMedioBloqueInput, "| cantidad:", cantidad, "| offset:", offset);
+
+  const resultado = procesarActividad(tag, isEnding, esMedioBloqueInput, cantidad, offset);
 
   const token = getBotToken();
   if (chatId) {
     try {
       const infoBloque = resultado
-        ? `\n: ${resultado.rangoBloque} (${resultado.esMedioBloque ? "0.25h" : "0.5h"})`
-        : "";
+        ? `\n: ${resultado.rangoBloque} (${resultado.esMedioBloque ? "0.25h" : "0.5h"}${resultado.bloques > 1 ? " x" + resultado.bloques : ""})`
+        : "\n⚠️ offset fuera del día, no se escribió nada";
       UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: "post",
         contentType: "application/json",
