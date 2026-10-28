@@ -21,17 +21,35 @@ const FEHLER_BLOQUES = [
   { titulo: "Präposition und Verbvalenz", categoria: "Präpositionen und Verbvalenz",
     columnas: ["original", "corregido"] },
   { titulo: "Kollokation & Satzbau",   categoria: "Kollokationen & Satzbau",
-    columnas: ["falsch", "richtig", "ES"] },
+    columnas: ["falsch", "richtig"] },
   { titulo: "Vokabeln",                categoria: "Vokabeln",
     columnas: ["falsch", "richtig", "falsch (ES)", "richtig (ES)"] },
   { titulo: "Orthographie",            categoria: "Orthographie",
     columnas: ["original, corregido"] },
+  // Directorio de sustantivos con su artículo correcto, alimentado desde los
+  // errores de Grammatik que dependen del artículo/caso (ver esErrorDeCaso),
+  // con las formas de color der ▲ azul, das ■ verde, die ● rojo, plural ∞ naranja.
+  // `categoria` ficticia: nunca coincide con la D1. `directorio`: cada
+  // columna lleva su propio puntero de fila (alineado al día) y sin repetidos.
+  // `huecoAntes` = columnas vacías antes del bloque (queda en O-Q).
+  { titulo: "Artikel",                 categoria: "Artikel", huecoAntes: 1, directorio: true,
+    columnas: ["▲ Der", "■ Das", "● Die", "∞ Plural"] },
+];
+
+// Orden de las columnas de "Artikel": der ▲, das ■, die ● (como se aprende) y
+// una cuarta para plurales, que son lo más difícil de formar.
+const FEHLER_GENEROS = [
+  { art: "der", simbolo: "▲", color: "#1a5fb4" },
+  { art: "das", simbolo: "■", color: "#26a269" },
+  { art: "die", simbolo: "●", color: "#c01c28" },
+  { art: "plural", simbolo: "∞", color: "#e66100" },
 ];
 
 // Devuelve los bloques con su columna inicial en la hoja (A es la fecha).
 function fehlerBloquesConColumna() {
   let col = FEHLER_COL_FECHA + 1;
   return FEHLER_BLOQUES.map(b => {
+    col += b.huecoAntes || 0;
     const conCol = Object.assign({}, b, { colInicio: col });
     col += b.columnas.length;
     return conCol;
@@ -53,6 +71,9 @@ function prepararBdFehler() {
 
   const ultimaCol = bloques[bloques.length - 1].colInicio +
                     bloques[bloques.length - 1].columnas.length - 1;
+  const art = bloques.filter(b => b.directorio)[0];
+  if (art) FEHLER_GENEROS.forEach((g, i) =>
+    sheet.getRange(2, art.colInicio + i).setFontColor(g.color));
   sheet.getRange(1, 1, 2, ultimaCol).setFontWeight("bold");
   sheet.getRange(2, 1, 1, ultimaCol).setFontStyle("italic");
   sheet.setFrozenRows(2);
@@ -212,7 +233,14 @@ function importarFehler() {
 
     const bloques = fehlerBloquesConColumna();
     const siguienteFila = {};
-    bloques.forEach(b => { siguienteFila[b.categoria] = primeraFilaLibreBloque(sheet, b.colInicio); });
+    // Un puntero por columna de seguimiento: una por bloque, salvo el
+    // directorio (Artikel), que tiene una por género.
+    const seguimiento = [];
+    bloques.forEach(b => {
+      if (b.directorio) b.columnas.forEach((_, i) => seguimiento.push({ clave: b.titulo + i, col: b.colInicio + i }));
+      else seguimiento.push({ clave: b.titulo, col: b.colInicio });
+    });
+    seguimiento.forEach(c => { siguienteFila[c.clave] = primeraFilaLibreBloque(sheet, c.col); });
 
     // Como en VHS: la fecha ("Mon 21") se escribe en A solo en el primer error
     // del día, y al empezar un día nuevo todos los bloques se alinean a la
@@ -228,16 +256,29 @@ function importarFehler() {
       const fecha = new Date(e.created_at);
       const dia = Utilities.formatDate(fecha, ZONA_HORARIA, "yyyy-MM-dd");
       if (dia !== ultimoDia) {
-        filaDia = Math.max.apply(null, bloques.map(b => siguienteFila[b.categoria]));
-        bloques.forEach(b => { siguienteFila[b.categoria] = filaDia; });
+        filaDia = Math.max.apply(null, seguimiento.map(c => siguienteFila[c.clave]));
+        seguimiento.forEach(c => { siguienteFila[c.clave] = filaDia; });
         sheet.getRange(filaDia, FEHLER_COL_FECHA).setValue(Utilities.formatDate(fecha, ZONA_HORARIA, "EEE d"));
         ultimoDia = dia;
       }
       // Un bloque sin nada aún en el día en curso arranca en la fila del día.
-      siguienteFila[bloque.categoria] = Math.max(siguienteFila[bloque.categoria], filaDia);
+      siguienteFila[bloque.titulo] = Math.max(siguienteFila[bloque.titulo], filaDia);
 
-      const fila = siguienteFila[bloque.categoria]++;
+      const fila = siguienteFila[bloque.titulo]++;
       escribirFilaFehler(sheet, bloque, fila, e);
+
+      // Errores de Grammatik que dependen del artículo/caso: al directorio "Artikel".
+      if (e.category === "Grammatik & Zeichensetzung" && esErrorDeCaso(e)) {
+        const sus = sustantivoConArticulo(e);
+        if (sus) {
+          const bArt = bloques.filter(b => b.categoria === "Artikel")[0];
+          const clave = bArt.titulo + sus.genero;
+          siguienteFila[clave] = Math.max(siguienteFila[clave], filaDia);
+          agregarAlDirectorio(sheet, bArt, sus, siguienteFila[clave]);
+          siguienteFila[clave]++;
+        }
+        else Logger.log("importarFehler: sin sustantivo identificable para Artikel (id " + e.id + ")");
+      }
       importadas++;
     });
 
@@ -327,6 +368,92 @@ function esErrorDeArticulo(e) {
   const o = pal(e.original), c = pal(e.corrected);
   const difieren = o.filter(w => c.indexOf(w) === -1).concat(c.filter(w => o.indexOf(w) === -1));
   return difieren.some(w => FEHLER_ARTIKEL.indexOf(w) !== -1);
+}
+
+// ¿El error de Grammatik se debe a artículo/género/caso (declinación)? Amplía
+// esErrorDeArticulo con la explicación: Kasus, Genus, adjetivos, Nebensatz...
+const FEHLER_CASO_RE = /artikel|nominativ|akkusativ|dativ|genitiv|kasus|genus|deklination|adjektiv|endung|maskulin|feminin|neutrum|plural|nebensatz/i;
+function esErrorDeCaso(e) {
+  return esErrorDeArticulo(e) || FEHLER_CASO_RE.test(e.explanation || "");
+}
+
+// Sustantivo con su artículo, p. ej. {genero: 0, nombre: "Hotspot"} (genero =
+// índice en FEHLER_GENEROS). Primero busca "der/die/das X" en la explicación;
+// si no, toma el género de la explicación y el sustantivo (primera palabra con
+// mayúscula) de la frase corregida. null si no se puede saber.
+function sustantivoConArticulo(e) {
+  const expl = e.explanation || "";
+  if (/substantiviert/i.test(expl)) return null; // "etwas Ähnliches": no es un sustantivo de verdad
+  const esPlural = /plural/i.test(expl) && !/person\s+plural/i.test(expl);
+  const m = esPlural ? null : expl.match(/\b(der|die|das)\s+([A-ZÄÖÜ][\wäöüßÄÖÜ-]*)/);
+  if (m) {
+    const g = FEHLER_GENEROS.map(x => x.art).indexOf(m[1].toLowerCase());
+    return { genero: g, nombre: m[2] };
+  }
+
+  let g = -1;
+  if (esPlural) g = 3;
+  else if (/maskulin/i.test(expl)) g = 0;
+  else if (/neutrum/i.test(expl)) g = 1;
+  else if (/feminin/i.test(expl)) g = 2;
+  if (g === -1) return null;
+
+  const palabras = (e.corrected || "").split(/\s+/).map(w => w.replace(/^[^\wäöüßÄÖÜ]+|[^\wäöüßÄÖÜ-]+$/g, ""));
+  const mayus = palabras.filter((w, i) => /^[A-ZÄÖÜ]/.test(w) && !(i === 0 && palabras.length > 1 && /^(Sie|Ihnen|Ich|Wir|Es)$/.test(w)));
+  if (!mayus.length) return null;
+  return { genero: g, nombre: mayus[0] };
+}
+
+// Escribe "▲ Nombre" en `fila`, bajo su género. El formato depende de cuántas
+// veces estuvo ya el sustantivo en la columna (error repetido):
+//   1.ª vez: solo el símbolo en color
+//   2.ª vez: todo el texto en color
+//   3.ª vez: color + negrita
+//   4.ª vez o más: color + negrita + MAYÚSCULAS
+// Devuelve siempre true.
+function agregarAlDirectorio(sheet, bloque, s, fila) {
+  const gen = FEHLER_GENEROS[s.genero];
+  const col = bloque.colInicio + s.genero;
+  const base = gen.simbolo + " " + s.nombre;
+  const ultima = sheet.getLastRow();
+  let previas = 0;
+  if (ultima >= FEHLER_FILA_DATOS) {
+    const vals = sheet.getRange(FEHLER_FILA_DATOS, col, ultima - FEHLER_FILA_DATOS + 1, 1).getValues();
+    previas = vals.filter(v => String(v[0]).toLowerCase() === base.toLowerCase()).length;
+  }
+  const vez = previas + 1;
+  // Char a char para no cambiar la longitud con la ß (como richTextFehler).
+  const texto = vez >= 4
+    ? base.split("").map(c => c === "ß" ? "ẞ" : c.toUpperCase()).join("")
+    : base;
+  const estilo = SpreadsheetApp.newTextStyle().setForegroundColor(gen.color).setBold(vez >= 3).build();
+  sheet.getRange(fila, col).setRichTextValue(
+    SpreadsheetApp.newRichTextValue().setText(texto)
+      .setTextStyle(0, vez === 1 ? gen.simbolo.length : texto.length, estilo).build());
+  return true;
+}
+
+// Reconstruye "Artikel" desde los errores que ya están en Grammatik (B-D): cada
+// entrada queda en la MISMA fila que su error (misma fecha). Borra antes las
+// filas de datos de O-R (incluye lo escrito a mano ahí). Correr tras prepararBdFehler().
+function rellenarArtikelDesdeHoja() {
+  const sheet = SpreadsheetApp.openById(ID_HOJA).getSheetByName(FEHLER_HOJA);
+  const bloques = fehlerBloquesConColumna();
+  const gram = bloques.filter(b => b.categoria === "Grammatik & Zeichensetzung")[0];
+  const art  = bloques.filter(b => b.categoria === "Artikel")[0];
+  const ultima = sheet.getLastRow();
+  if (ultima < FEHLER_FILA_DATOS) return;
+
+  const vals = sheet.getRange(FEHLER_FILA_DATOS, gram.colInicio, ultima - FEHLER_FILA_DATOS + 1, 3).getValues();
+  sheet.getRange(FEHLER_FILA_DATOS, art.colInicio, ultima - FEHLER_FILA_DATOS + 1, art.columnas.length).clearContent();
+  let nuevas = 0;
+  vals.forEach((v, i) => {
+    const e = { original: String(v[0]), corrected: String(v[1]), explanation: String(v[2]) };
+    if (!e.corrected || !esErrorDeCaso(e)) return;
+    const sus = sustantivoConArticulo(e);
+    if (sus && agregarAlDirectorio(sheet, art, sus, FEHLER_FILA_DATOS + i)) nuevas++;
+  });
+  Logger.log("rellenarArtikelDesdeHoja: " + nuevas + " entradas escritas");
 }
 
 function escaparHtml(t) {
