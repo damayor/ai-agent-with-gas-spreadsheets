@@ -93,12 +93,13 @@ const CF_D1_DB_ID   = "1a99e1de-190e-49bb-9f91-06e2640a0ee7";
 // para probar con pocos datos antes de abrirlo a todo el histórico.
 const FEHLER_DESDE_INICIAL = "2026-10-21";
 
-function consultarD1(sql, params) {
+// `dbId` opcional: por defecto la D1 de alemán (la de inglés la pasa FehlerEng.js).
+function consultarD1(sql, params, dbId) {
   const token = PropertiesService.getScriptProperties().getProperty("CF_D1_TOKEN");
   if (!token) throw new Error("Falta la propiedad CF_D1_TOKEN en PropertiesService");
 
   const url = "https://api.cloudflare.com/client/v4/accounts/" + CF_ACCOUNT_ID +
-              "/d1/database/" + CF_D1_DB_ID + "/query";
+              "/d1/database/" + (dbId || CF_D1_DB_ID) + "/query";
   const resp = UrlFetchApp.fetch(url, {
     method: "post",
     contentType: "application/json",
