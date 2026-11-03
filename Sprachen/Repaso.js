@@ -199,6 +199,7 @@ function obtenerPalabras(fechaRef, dias, fechaExacta) {
       const spoiler = tieneFrase(frase) ? frase : trad;
       (esIngles ? palabrasEN : palabrasDE).push({
         orig, spoiler, fecha: fechaAnotacion, fila: i + 1, col: par.col,
+        trad, frase: tieneFrase(frase) ? frase : "",
       });
     }
   }
