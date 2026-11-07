@@ -375,6 +375,26 @@ function testAgendaHoy() {
 //to use in Mobile
 function onEdit(e) {
   const rango = e.range;
+
+  // Celdas del calendario (C2:I49) que quedan vacías -> fondo blanco, para
+  // que no persista un color estático viejo (el formato condicional no lo quita).
+  if (rango.getSheet().getIndex() === 1 &&
+      rango.getRow() >= 2 && rango.getLastRow() <= 49 &&
+      rango.getColumn() >= 3 && rango.getLastColumn() <= 9) {
+    const vals = rango.getValues();
+    const bgs = rango.getBackgrounds();
+    let cambio = false;
+    for (let r = 0; r < vals.length; r++) {
+      for (let c = 0; c < vals[r].length; c++) {
+        if (vals[r][c] === "" && bgs[r][c] !== "#ffffff") {
+          bgs[r][c] = "#ffffff";
+          cambio = true;
+        }
+      }
+    }
+    if (cambio) rango.setBackgrounds(bgs);
+  }
+
   if (rango.getA1Notation() === "N13" && rango.getValue() === true) {
     actualizarHorasPorActividad(); // Aquí llamas a tu método
 
