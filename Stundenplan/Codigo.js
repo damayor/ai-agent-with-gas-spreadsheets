@@ -376,23 +376,16 @@ function testAgendaHoy() {
 function onEdit(e) {
   const rango = e.range;
 
-  // Celdas del calendario (C2:I49) que quedan vacías -> fondo blanco, para
-  // que no persista un color estático viejo (el formato condicional no lo quita).
+  // Una celda del calendario (C2:I49) que tenía texto y queda vacía -> fondo
+  // blanco, para que no persista un color estático viejo (el formato condicional
+  // no lo quita). Solo celda única con oldValue: pegar el bloque terracota
+  // (vacío, con color) abarca varias celdas o celdas ya vacías y no se toca.
   if (rango.getSheet().getIndex() === 1 &&
-      rango.getRow() >= 2 && rango.getLastRow() <= 49 &&
-      rango.getColumn() >= 3 && rango.getLastColumn() <= 9) {
-    const vals = rango.getValues();
-    const bgs = rango.getBackgrounds();
-    let cambio = false;
-    for (let r = 0; r < vals.length; r++) {
-      for (let c = 0; c < vals[r].length; c++) {
-        if (vals[r][c] === "" && bgs[r][c] !== "#ffffff") {
-          bgs[r][c] = "#ffffff";
-          cambio = true;
-        }
-      }
-    }
-    if (cambio) rango.setBackgrounds(bgs);
+      rango.getNumRows() === 1 && rango.getNumColumns() === 1 &&
+      e.oldValue !== undefined && rango.getValue() === "" &&
+      rango.getRow() >= 2 && rango.getRow() <= 49 &&
+      rango.getColumn() >= 3 && rango.getColumn() <= 9) {
+    rango.setBackground("#ffffff");
   }
 
   if (rango.getA1Notation() === "N13" && rango.getValue() === true) {
