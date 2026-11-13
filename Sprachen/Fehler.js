@@ -325,13 +325,13 @@ function ajustarAlturasBdFehler() {
   ajustarAlturasFehler(sheet, filas);
 }
 
-// Instala el trigger diario 21:30 Europe/Berlin (no duplica si ya existe).
+// Instala el trigger diario 21:30 ZONA_HORARIA (no duplica si ya existe).
 function crearTriggerFehler() {
   const existe = ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === "importarFehler");
   if (existe) { Logger.log("Trigger de importarFehler ya existe"); return; }
   ScriptApp.newTrigger("importarFehler").timeBased().atHour(21).nearMinute(30)
-    .inTimezone("Europe/Berlin").everyDays(1).create();
-  Logger.log("Trigger creado: importarFehler diario ~21:30 Europe/Berlin");
+    .inTimezone(ZONA_HORARIA).everyDays(1).create();
+  Logger.log("Trigger creado: importarFehler diario ~21:30 " + ZONA_HORARIA);
 }
 
 // Para volver a importar desde cero (borra solo el marcador, no la hoja).
@@ -512,7 +512,7 @@ function enviarRepasoFehler() {
   Logger.log("enviarRepasoFehler: " + elegidos.length + "/" + total + " errores enviados");
 }
 
-// Instala el trigger diario 21:30 Europe/Berlin (no duplica si ya existe).
+// Instala el trigger diario 21:30 ZONA_HORARIA (no duplica si ya existe).
 function crearTriggerRepasoFehler() {
   const existe = ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === "enviarRepasoFehler");
   if (existe) { Logger.log("Trigger de enviarRepasoFehler ya existe"); return; }

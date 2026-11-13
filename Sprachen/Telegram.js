@@ -36,7 +36,7 @@
 
 const ID_HOJA      = "1yYJzqZmJOvM6lMMXLdf_ZWMEaa0_vvDWDeu87T2sm38";
 const NOMBRE_TAB   = "WoerterDesTages";
-const ZONA_HORARIA = "Europe/Berlin";
+const ZONA_HORARIA = "America/Bogota";
 
 // ============================================================
 // Ruteo de comandos — llamado por pollTelegram()
@@ -553,7 +553,7 @@ function crearTriggerAlinearNuevoDia() {
     .everyDays(1)
     .inTimezone(ZONA_HORARIA)
     .create();
-  Logger.log("Trigger creado: alinearNuevoDiaTodasHojas diario ~2 AM (Europe/Berlin).");
+  Logger.log("Trigger creado: alinearNuevoDiaTodasHojas diario ~2 AM (" + ZONA_HORARIA + ").");
 }
 
 function obtenerColActiva() {

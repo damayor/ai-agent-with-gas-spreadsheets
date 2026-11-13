@@ -125,7 +125,7 @@ de última fila (`PUNTERO_COL_<hoja>_<columna>`) y fecha de último acceso
 
 - Spreadsheet ID: `1yYJzqZmJOvM6lMMXLdf_ZWMEaa0_vvDWDeu87T2sm38`
 - Tab principal: `WoerterDesTages`
-- Zona horaria: `Europe/Berlin`
+- Zona horaria: `America/Bogota`
 - Columnas de `WoerterDesTages`: A=date range heading, B=fecha, C/D/E=palabras (Wort),
   F=idioma (`en` o vacío=alemán), G/H/I=traducciones español, K/L/M=oraciones de
   contexto (Satz)

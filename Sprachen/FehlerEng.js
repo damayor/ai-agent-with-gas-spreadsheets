@@ -244,13 +244,13 @@ function importarEng() {
   }
 }
 
-// Instala el trigger diario 07:30 Europe/Berlin (no duplica si ya existe).
+// Instala el trigger diario 07:30 ZONA_HORARIA (no duplica si ya existe).
 function crearTriggerEng() {
   const existe = ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === "importarEng");
   if (existe) { Logger.log("Trigger de importarEng ya existe"); return; }
   ScriptApp.newTrigger("importarEng").timeBased().atHour(7).nearMinute(30)
-    .inTimezone("Europe/Berlin").everyDays(1).create();
-  Logger.log("Trigger creado: importarEng diario ~07:30 Europe/Berlin");
+    .inTimezone(ZONA_HORARIA).everyDays(1).create();
+  Logger.log("Trigger creado: importarEng diario ~07:30 " + ZONA_HORARIA);
 }
 
 // Para volver a importar desde cero (borra solo el marcador, no la hoja).

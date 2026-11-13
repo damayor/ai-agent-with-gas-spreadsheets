@@ -236,7 +236,7 @@ function crearTriggersQuizSemanal() {
       .nearMinute(0)
       .inTimezone(ZONA_HORARIA)
       .create();
-    Logger.log("Trigger creado: quizSemanalDeutsch domingo ~12:00 (Europe/Berlin).");
+    Logger.log("Trigger creado: quizSemanalDeutsch domingo ~12:00 (" + ZONA_HORARIA + ").");
   } else {
     Logger.log("El trigger de quizSemanalDeutsch ya existe, no se crea otro.");
   }
@@ -249,7 +249,7 @@ function crearTriggersQuizSemanal() {
       .nearMinute(0)
       .inTimezone(ZONA_HORARIA)
       .create();
-    Logger.log("Trigger creado: quizSemanalEnglish jueves ~12:00 (Europe/Berlin).");
+    Logger.log("Trigger creado: quizSemanalEnglish jueves ~12:00 (" + ZONA_HORARIA + ").");
   } else {
     Logger.log("El trigger de quizSemanalEnglish ya existe, no se crea otro.");
   }
